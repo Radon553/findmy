@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FindThis</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header>
+        <h1>FindThis</h1>
+        <p class="subtitle">Wearable AI Memory</p>
+    </header>
+
+    <main>
+        <!-- Controls -->
+        <section class="controls">
+            <button id="btn-camera" class="btn" onclick="toggleCamera()">Start Camera</button>
+            <button id="btn-detect" class="btn" onclick="toggleDetection()" disabled>Start Detection</button>
+            <span id="status-indicator" class="status off">Idle</span>
+        </section>
+
+        <!-- Camera Feed -->
+        <section class="camera-section">
+            <div class="feed-container">
+                <img id="camera-feed" src="" alt="Camera feed will appear here">
+                <div id="feed-placeholder" class="placeholder">Camera Off</div>
+            </div>
+        </section>
+
+        <!-- Search -->
+        <section class="search-section">
+            <h2>Find My Stuff</h2>
+            <form id="search-form" onsubmit="searchItem(event)">
+                <input type="text" id="search-input" placeholder='Try "where are my keys?"' autocomplete="off">
+                <button type="submit" class="btn btn-search">Search</button>
+            </form>
+            <div id="search-results"></div>
+        </section>
+
+        <!-- Register Item -->
+        <section class="register-section">
+            <h2>Register an Item</h2>
+            <form id="register-form" onsubmit="registerItem(event)">
+                <input type="text" id="item-name" placeholder="Item name (e.g. keys)" required>
+                <input type="file" id="item-photo" accept="image/*" required>
+                <button type="submit" class="btn btn-register">Register</button>
+            </form>
+            <div id="register-status"></div>
+        </section>
+
+        <!-- Registered Items -->
+        <section class="items-section">
+            <h2>Tracked Items</h2>
+            <div id="items-list" class="items-grid"></div>
+        </section>
+    </main>
+
+    <script src="/app.js"></script>
+</body>
+</html>
