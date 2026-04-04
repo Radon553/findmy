@@ -141,7 +141,7 @@ class DetectionService:
 
         # --- Grid crop fallback for custom items ---
         yolo_boxes = detections.xyxy if len(detections) > 0 else np.empty((0, 4))
-        if GRID_CROP_ENABLED and self._frame_counter % 2 == 0:
+        if GRID_CROP_ENABLED:
             grid_crops, grid_ids = self._generate_grid_crops(frame, yolo_boxes)
             for gc, gid in zip(grid_crops, grid_ids):
                 crops.append(gc)

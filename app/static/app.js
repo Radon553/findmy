@@ -39,6 +39,7 @@ async function toggleCamera() {
             btn.disabled = false;
             detectBtn.disabled = false;
             cameraSelect.disabled = true;
+            document.getElementById('btn-snap').disabled = false;
             showFeed();
             updateStatus();
         } else {
@@ -58,6 +59,7 @@ async function toggleCamera() {
         btn.classList.remove('active');
         detectBtn.disabled = true;
         cameraSelect.disabled = false;
+        document.getElementById('btn-snap').disabled = true;
         hideFeed();
         updateStatus();
     }
@@ -158,22 +160,77 @@ function formatTime(ts) {
     return d.toLocaleString();
 }
 
+// --- Snapshot for registration ---
+
+let _snapshotBlob = null;
+
+async function takeSnapshot() {
+    const btn = document.getElementById('btn-snap');
+    const canvas = document.getElementById('snap-preview');
+    const photoInput = document.getElementById('item-photo');
+    const statusDiv = document.getElementById('register-status');
+
+    btn.textContent = 'Capturing...';
+    btn.disabled = true;
+
+    try {
+        const res = await fetch('/api/camera/snapshot');
+        if (!res.ok) throw new Error('Camera not ready');
+        const blob = await res.blob();
+        _snapshotBlob = blob;
+
+        // Clear any file selection — snapshot takes precedence
+        photoInput.value = '';
+
+        // Show preview
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.getContext('2d').drawImage(img, 0, 0);
+            canvas.style.display = 'block';
+            URL.revokeObjectURL(url);
+        };
+        img.src = url;
+
+        statusDiv.innerHTML = '<span style="color:#00d4ff">Photo captured — enter a name and click Register.</span>';
+    } catch (err) {
+        statusDiv.innerHTML = `<span class="error">Could not capture: ${err.message}</span>`;
+    }
+
+    btn.textContent = 'Retake Photo';
+    btn.disabled = false;
+}
+
 // --- Register ---
 
 async function registerItem(e) {
     e.preventDefault();
     const nameInput = document.getElementById('item-name');
     const photoInput = document.getElementById('item-photo');
+    const canvas = document.getElementById('snap-preview');
     const statusDiv = document.getElementById('register-status');
 
     const name = nameInput.value.trim();
-    if (!name || !photoInput.files.length) return;
+    if (!name) return;
+
+    // Determine photo source: snapshot blob > file input
+    let photoFile = null;
+    if (_snapshotBlob) {
+        photoFile = new File([_snapshotBlob], 'snapshot.jpg', { type: 'image/jpeg' });
+    } else if (photoInput.files.length) {
+        photoFile = photoInput.files[0];
+    } else {
+        statusDiv.innerHTML = '<span class="error">Please upload a photo or take one with the camera.</span>';
+        return;
+    }
 
     statusDiv.innerHTML = '<span style="color:#666">Registering... (generating CLIP embedding)</span>';
 
     const form = new FormData();
     form.append('name', name);
-    form.append('photo', photoInput.files[0]);
+    form.append('photo', photoFile);
 
     const res = await fetch('/api/items/register', { method: 'POST', body: form });
     const data = await res.json();
@@ -182,6 +239,8 @@ async function registerItem(e) {
         statusDiv.innerHTML = `<span class="success">Registered "${data.name}" successfully!</span>`;
         nameInput.value = '';
         photoInput.value = '';
+        _snapshotBlob = null;
+        canvas.style.display = 'none';
         loadItems();
     } else {
         statusDiv.innerHTML = `<span class="error">${data.detail || 'Registration failed'}</span>`;
@@ -243,6 +302,7 @@ async function init() {
         camBtn.classList.add('active');
         detBtn.disabled = false;
         document.getElementById('camera-select').disabled = true;
+        document.getElementById('btn-snap').disabled = false;
         showFeed();
     }
     if (detectionRunning) {

@@ -27,7 +27,7 @@ CONFIRMATION_MAX_GAP = 1.0  # discard pending sighting after this gap
 
 # Grid crop fallback for custom items
 GRID_CROP_ENABLED = True
-GRID_CROP_SCALES = [(320, 240), (200, 150)]
-GRID_CROP_STRIDE = 0.5  # stride as fraction of window size
-GRID_CROP_MAX = 16  # max grid crops per frame
-GRID_CROP_SIMILARITY_THRESHOLD = 0.80  # higher threshold for grid crops
+GRID_CROP_SCALES = [(400, 300), (240, 180), (160, 120), (120, 120)]
+GRID_CROP_STRIDE = 0.35  # tighter overlap so boundary objects are fully captured
+GRID_CROP_MAX = 32  # enough crops for multi-scale coverage
+GRID_CROP_SIMILARITY_THRESHOLD = 0.76  # slightly relaxed for distant/small objects

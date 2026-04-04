@@ -278,6 +278,46 @@ input[type="file"] {
     align-items: center;
 }
 
+.photo-input-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.photo-or {
+    color: #444;
+    font-size: 0.85rem;
+}
+
+.btn-snap {
+    border-color: #f59e0b;
+    color: #f59e0b;
+}
+
+.btn-snap:hover {
+    background: #f59e0b;
+    color: #0a0a0f;
+}
+
+.btn-snap:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.btn-snap:disabled:hover {
+    background: transparent;
+    color: #f59e0b;
+}
+
+#snap-preview {
+    width: 100%;
+    max-width: 320px;
+    border-radius: 6px;
+    border: 1px solid #f59e0b;
+    margin-top: 0.5rem;
+}
+
 #register-status {
     margin-top: 0.5rem;
     font-size: 0.85rem;
