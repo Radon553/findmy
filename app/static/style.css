@@ -146,6 +146,27 @@ h2 {
     50% { opacity: 0.6; }
 }
 
+/* Camera Select */
+#camera-select {
+    padding: 0.6rem 1rem;
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+#camera-select:focus {
+    outline: none;
+    border-color: #00d4ff;
+}
+
+#camera-select:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
 /* Camera Feed */
 .feed-container {
     position: relative;

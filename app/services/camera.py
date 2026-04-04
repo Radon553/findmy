@@ -20,8 +20,25 @@ class CameraService:
         self._video_path: str | None = None
         self._video_fps: float = 25.0
         self._looping = False
+        self._camera_index: int = CAMERA_INDEX
 
-    def start(self, video_path: str | None = None, loop: bool = False):
+    @staticmethod
+    def enumerate_cameras(max_index: int = 10) -> list[dict]:
+        """Probe camera indices and return a list of available cameras."""
+        cameras = []
+        for i in range(max_index):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                cameras.append({"index": i, "name": f"Camera {i}"})
+                cap.release()
+        return cameras
+
+    def start(
+        self,
+        video_path: str | None = None,
+        loop: bool = False,
+        camera_index: int | None = None,
+    ):
         if self._running:
             return
         self._video_path = video_path
@@ -30,11 +47,13 @@ class CameraService:
             self._cap = cv2.VideoCapture(video_path)
             self._video_fps = self._cap.get(cv2.CAP_PROP_FPS) or 25.0
         else:
-            self._cap = cv2.VideoCapture(CAMERA_INDEX)
+            idx = camera_index if camera_index is not None else CAMERA_INDEX
+            self._camera_index = idx
+            self._cap = cv2.VideoCapture(idx)
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
         if not self._cap.isOpened():
-            source = video_path or f"camera index {CAMERA_INDEX}"
+            source = video_path or f"camera index {self._camera_index}"
             raise RuntimeError(f"Cannot open {source}")
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)

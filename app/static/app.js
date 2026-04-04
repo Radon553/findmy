@@ -3,20 +3,42 @@ let detectionRunning = false;
 
 // --- Camera ---
 
+async function loadCameras() {
+    const select = document.getElementById('camera-select');
+    try {
+        const res = await fetch('/api/camera/list');
+        const cameras = await res.json();
+        // Keep the default option, add discovered cameras
+        select.innerHTML = '<option value="">Default Camera</option>';
+        cameras.forEach(cam => {
+            const opt = document.createElement('option');
+            opt.value = cam.index;
+            opt.textContent = cam.name;
+            select.appendChild(opt);
+        });
+    } catch (e) {
+        console.warn('Could not enumerate cameras:', e);
+    }
+}
+
 async function toggleCamera() {
     const btn = document.getElementById('btn-camera');
     const detectBtn = document.getElementById('btn-detect');
+    const cameraSelect = document.getElementById('camera-select');
 
     if (!cameraRunning) {
         btn.textContent = 'Starting...';
         btn.disabled = true;
-        const res = await fetch('/api/camera/start', { method: 'POST' });
+        const idx = cameraSelect.value;
+        const url = idx !== '' ? `/api/camera/start?camera_index=${idx}` : '/api/camera/start';
+        const res = await fetch(url, { method: 'POST' });
         if (res.ok) {
             cameraRunning = true;
             btn.textContent = 'Stop Camera';
             btn.classList.add('active');
             btn.disabled = false;
             detectBtn.disabled = false;
+            cameraSelect.disabled = true;
             showFeed();
             updateStatus();
         } else {
@@ -35,6 +57,7 @@ async function toggleCamera() {
         btn.textContent = 'Start Camera';
         btn.classList.remove('active');
         detectBtn.disabled = true;
+        cameraSelect.disabled = false;
         hideFeed();
         updateStatus();
     }
@@ -213,10 +236,13 @@ async function init() {
     const camBtn = document.getElementById('btn-camera');
     const detBtn = document.getElementById('btn-detect');
 
+    await loadCameras();
+
     if (cameraRunning) {
         camBtn.textContent = 'Stop Camera';
         camBtn.classList.add('active');
         detBtn.disabled = false;
+        document.getElementById('camera-select').disabled = true;
         showFeed();
     }
     if (detectionRunning) {
