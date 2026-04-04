@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import aiosqlite
 import json
+import logging
 from app.config import DB_PATH
+
+logger = logging.getLogger(__name__)
 
 
 async def get_db() -> aiosqlite.Connection:
@@ -13,6 +16,7 @@ async def get_db() -> aiosqlite.Connection:
 
 async def init_db():
     async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
         await db.execute("""
             CREATE TABLE IF NOT EXISTS registered_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,6 +45,39 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_sightings_name
             ON sightings(item_name, timestamp DESC)
         """)
+
+        # --- item_embeddings table (multi-angle support) ---
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS item_embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id INTEGER NOT NULL,
+                embedding TEXT NOT NULL,
+                source TEXT DEFAULT 'original',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (item_id) REFERENCES registered_items(id)
+            )
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_item_embeddings_item
+            ON item_embeddings(item_id)
+        """)
+
+        # --- Migrate existing embeddings if item_embeddings is empty ---
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM item_embeddings")
+        row = await cursor.fetchone()
+        if row["cnt"] == 0:
+            cursor = await db.execute(
+                "SELECT id, embedding FROM registered_items WHERE embedding IS NOT NULL AND embedding != ''"
+            )
+            items = await cursor.fetchall()
+            if items:
+                for item in items:
+                    await db.execute(
+                        "INSERT INTO item_embeddings (item_id, embedding, source) VALUES (?, ?, ?)",
+                        (item["id"], item["embedding"], "migrated"),
+                    )
+                logger.info(f"Migrated {len(items)} embeddings to item_embeddings table")
+
         await db.commit()
 
 

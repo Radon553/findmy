@@ -47,11 +47,11 @@
             <form id="register-form" onsubmit="registerItem(event)">
                 <input type="text" id="item-name" placeholder="Item name (e.g. keys)" required>
                 <div class="photo-input-row">
-                    <input type="file" id="item-photo" accept="image/*">
+                    <input type="file" id="item-photo" accept="image/*" multiple>
                     <span class="photo-or">or</span>
                     <button type="button" id="btn-snap" class="btn btn-snap" onclick="takeSnapshot()" disabled>Take Photo</button>
                 </div>
-                <canvas id="snap-preview" style="display:none"></canvas>
+                <div id="snap-previews" class="snap-previews"></div>
                 <button type="submit" class="btn btn-register">Register</button>
             </form>
             <div id="register-status"></div>

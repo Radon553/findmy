@@ -17,9 +17,15 @@ FRAME_HEIGHT = 720
 # Detection
 YOLO_MODEL = "yolov8n.pt"
 CLIP_MODEL = "openai/clip-vit-base-patch32"
-SIMILARITY_THRESHOLD = 0.75
+YOLO_CONFIDENCE = 0.4  # min confidence for YOLO detections
+YOLO_IOU_THRESHOLD = 0.45  # NMS IoU threshold to suppress duplicate boxes
 DETECTION_INTERVAL = 0.5  # seconds between detection cycles
 COOLDOWN_SECONDS = 30  # min seconds between saving same item
+
+# Dynamic similarity thresholds (based on number of registered embeddings)
+SIMILARITY_THRESHOLD = 0.75  # baseline (2 photos)
+SIMILARITY_THRESHOLD_SINGLE = 0.80  # items with only 1 photo — stricter
+SIMILARITY_THRESHOLD_MULTI = 0.70  # items with 3+ photos — more reliable
 
 # Visibility confirmation
 CONFIRMATION_SECONDS = 1.0  # object must be visible this long before saving
@@ -31,3 +37,6 @@ GRID_CROP_SCALES = [(400, 300), (240, 180), (160, 120), (120, 120)]
 GRID_CROP_STRIDE = 0.35  # tighter overlap so boundary objects are fully captured
 GRID_CROP_MAX = 32  # enough crops for multi-scale coverage
 GRID_CROP_SIMILARITY_THRESHOLD = 0.76  # slightly relaxed for distant/small objects
+
+# Confidence logging
+MATCH_LOG_PATH = DATA_DIR / "match_log.csv"

@@ -8,7 +8,6 @@ async function loadCameras() {
     try {
         const res = await fetch('/api/camera/list');
         const cameras = await res.json();
-        // Keep the default option, add discovered cameras
         select.innerHTML = '<option value="">Default Camera</option>';
         cameras.forEach(cam => {
             const opt = document.createElement('option');
@@ -49,7 +48,6 @@ async function toggleCamera() {
             btn.disabled = false;
         }
     } else {
-        // Stop detection first if running
         if (detectionRunning) {
             await toggleDetection();
         }
@@ -162,11 +160,11 @@ function formatTime(ts) {
 
 // --- Snapshot for registration ---
 
-let _snapshotBlob = null;
+let _snapshotBlobs = [];
 
 async function takeSnapshot() {
     const btn = document.getElementById('btn-snap');
-    const canvas = document.getElementById('snap-preview');
+    const previewsDiv = document.getElementById('snap-previews');
     const photoInput = document.getElementById('item-photo');
     const statusDiv = document.getElementById('register-status');
 
@@ -177,29 +175,26 @@ async function takeSnapshot() {
         const res = await fetch('/api/camera/snapshot');
         if (!res.ok) throw new Error('Camera not ready');
         const blob = await res.blob();
-        _snapshotBlob = blob;
+        _snapshotBlobs.push(blob);
 
-        // Clear any file selection — snapshot takes precedence
+        // Clear any file selection — snapshots take precedence
         photoInput.value = '';
 
-        // Show preview
+        // Add preview thumbnail
         const url = URL.createObjectURL(blob);
-        const img = new Image();
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            canvas.getContext('2d').drawImage(img, 0, 0);
-            canvas.style.display = 'block';
-            URL.revokeObjectURL(url);
-        };
-        img.src = url;
+        const thumb = document.createElement('div');
+        thumb.className = 'snap-thumb';
+        thumb.innerHTML = `<img src="${url}" alt="Snapshot ${_snapshotBlobs.length}">
+            <span class="snap-num">${_snapshotBlobs.length}</span>`;
+        previewsDiv.appendChild(thumb);
 
-        statusDiv.innerHTML = '<span style="color:#00d4ff">Photo captured — enter a name and click Register.</span>';
+        const count = _snapshotBlobs.length;
+        statusDiv.innerHTML = `<span style="color:#00d4ff">${count} photo${count > 1 ? 's' : ''} captured. Take more or click Register.</span>`;
     } catch (err) {
         statusDiv.innerHTML = `<span class="error">Could not capture: ${err.message}</span>`;
     }
 
-    btn.textContent = 'Retake Photo';
+    btn.textContent = 'Take Another Photo';
     btn.disabled = false;
 }
 
@@ -209,41 +204,79 @@ async function registerItem(e) {
     e.preventDefault();
     const nameInput = document.getElementById('item-name');
     const photoInput = document.getElementById('item-photo');
-    const canvas = document.getElementById('snap-preview');
+    const previewsDiv = document.getElementById('snap-previews');
     const statusDiv = document.getElementById('register-status');
 
     const name = nameInput.value.trim();
     if (!name) return;
 
-    // Determine photo source: snapshot blob > file input
-    let photoFile = null;
-    if (_snapshotBlob) {
-        photoFile = new File([_snapshotBlob], 'snapshot.jpg', { type: 'image/jpeg' });
-    } else if (photoInput.files.length) {
-        photoFile = photoInput.files[0];
+    const form = new FormData();
+    form.append('name', name);
+
+    // Determine photo source: snapshot blobs > file input
+    if (_snapshotBlobs.length > 0) {
+        _snapshotBlobs.forEach((blob, i) => {
+            form.append('photos', new File([blob], `snapshot_${i + 1}.jpg`, { type: 'image/jpeg' }));
+        });
+    } else if (photoInput.files.length > 0) {
+        for (const file of photoInput.files) {
+            form.append('photos', file);
+        }
     } else {
-        statusDiv.innerHTML = '<span class="error">Please upload a photo or take one with the camera.</span>';
+        statusDiv.innerHTML = '<span class="error">Please upload photo(s) or take them with the camera.</span>';
         return;
     }
 
-    statusDiv.innerHTML = '<span style="color:#666">Registering... (generating CLIP embedding)</span>';
-
-    const form = new FormData();
-    form.append('name', name);
-    form.append('photo', photoFile);
+    statusDiv.innerHTML = '<span style="color:#666">Registering... (generating CLIP embeddings)</span>';
 
     const res = await fetch('/api/items/register', { method: 'POST', body: form });
     const data = await res.json();
 
     if (res.ok) {
-        statusDiv.innerHTML = `<span class="success">Registered "${data.name}" successfully!</span>`;
+        statusDiv.innerHTML = `<span class="success">Registered "${data.name}" with ${data.photo_count} photo(s)!</span>`;
         nameInput.value = '';
         photoInput.value = '';
-        _snapshotBlob = null;
-        canvas.style.display = 'none';
+        _snapshotBlobs = [];
+        previewsDiv.innerHTML = '';
+        document.getElementById('btn-snap').textContent = 'Take Photo';
         loadItems();
     } else {
-        statusDiv.innerHTML = `<span class="error">${data.detail || 'Registration failed'}</span>`;
+        let errMsg = 'Registration failed';
+        if (data.detail) {
+            errMsg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+        }
+        statusDiv.innerHTML = `<span class="error">${errMsg}</span>`;
+    }
+}
+
+// --- Add photo to existing item ---
+
+async function addPhotoToItem(itemId, itemName) {
+    if (!cameraRunning) {
+        alert('Start the camera first to take a photo.');
+        return;
+    }
+
+    const res = await fetch('/api/camera/snapshot');
+    if (!res.ok) {
+        alert('Could not capture photo. Is the camera running?');
+        return;
+    }
+    const blob = await res.blob();
+    const form = new FormData();
+    form.append('photo', new File([blob], 'additional.jpg', { type: 'image/jpeg' }));
+
+    const statusDiv = document.getElementById('register-status');
+    statusDiv.innerHTML = `<span style="color:#666">Adding photo to "${itemName}"...</span>`;
+
+    const addRes = await fetch(`/api/items/${itemId}/add-photo`, { method: 'POST', body: form });
+    const data = await addRes.json();
+
+    if (addRes.ok) {
+        statusDiv.innerHTML = `<span class="success">Added photo to "${data.name}" (${data.photo_count} total)</span>`;
+        loadItems();
+    } else {
+        statusDiv.innerHTML = `<span class="error">${data.detail || 'Failed to add photo'}</span>`;
     }
 }
 
@@ -263,8 +296,14 @@ async function loadItems() {
         <div class="item-card">
             <img src="/data/registered/${item.image_path}" alt="${item.name}">
             <div class="item-card-body">
-                <span>${item.name}</span>
-                <button class="btn btn-danger" onclick="deleteItem(${item.id}, '${item.name}')">Remove</button>
+                <div class="item-card-info">
+                    <span>${item.name}</span>
+                    <span class="photo-count">${item.photo_count} photo${item.photo_count !== 1 ? 's' : ''}</span>
+                </div>
+                <div class="item-card-actions">
+                    <button class="btn btn-snap btn-small" onclick="addPhotoToItem(${item.id}, '${item.name}')">+ Photo</button>
+                    <button class="btn btn-danger btn-small" onclick="deleteItem(${item.id}, '${item.name}')">Remove</button>
+                </div>
             </div>
         </div>
     `).join('');
@@ -281,7 +320,6 @@ async function deleteItem(id, name) {
 // --- Init ---
 
 async function init() {
-    // Sync state with server
     const [camRes, detRes] = await Promise.all([
         fetch('/api/camera/status'),
         fetch('/api/detection/status')
@@ -303,7 +341,6 @@ async function init() {
         detBtn.disabled = false;
         document.getElementById('camera-select').disabled = true;
         document.getElementById('btn-snap').disabled = false;
-        showFeed();
     }
     if (detectionRunning) {
         detBtn.textContent = 'Stop Detection';

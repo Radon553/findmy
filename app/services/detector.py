@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import cv2
 import logging
 import numpy as np
 import time
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
@@ -16,7 +17,11 @@ import supervision as sv
 
 from app.config import (
     YOLO_MODEL,
+    YOLO_CONFIDENCE,
+    YOLO_IOU_THRESHOLD,
     SIMILARITY_THRESHOLD,
+    SIMILARITY_THRESHOLD_SINGLE,
+    SIMILARITY_THRESHOLD_MULTI,
     DETECTION_INTERVAL,
     COOLDOWN_SECONDS,
     IMAGES_DIR,
@@ -27,6 +32,7 @@ from app.config import (
     GRID_CROP_STRIDE,
     GRID_CROP_MAX,
     GRID_CROP_SIMILARITY_THRESHOLD,
+    MATCH_LOG_PATH,
 )
 from app.database import get_db, deserialize_embedding
 from app.services.camera import camera_service
@@ -35,6 +41,16 @@ from app.services.clip_service import clip_service
 logger = logging.getLogger(__name__)
 
 MAX_PENDING = 50
+
+# CLAHE for crop preprocessing
+_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+# Sharpening kernel
+_sharpen_kernel = np.array(
+    [[ 0, -1,  0],
+     [-1,  5, -1],
+     [ 0, -1,  0]], dtype=np.float32
+)
 
 
 @dataclass
@@ -53,9 +69,12 @@ class DetectionService:
     1. YOLO detects objects in the frame
     2. ByteTrack tracks objects across frames
     3. Grid-crop fallback finds objects YOLO misses
-    4. CLIP matches cropped detections against registered item embeddings
-    5. Pending sighting system confirms visibility for >= 1 second
-    6. Saves sightings with the best frame above the similarity threshold
+    4. Crops are preprocessed (CLAHE + sharpening) for better CLIP accuracy
+    5. CLIP matches cropped detections against ALL registered embeddings per item
+    6. Dynamic threshold based on how many photos the item was registered with
+    7. Pending sighting system confirms visibility for >= 1 second
+    8. Saves sightings with the best frame above the similarity threshold
+    9. All match attempts logged to CSV for threshold tuning
     """
 
     def __init__(self):
@@ -69,6 +88,9 @@ class DetectionService:
         # (tracker_id, item_name) -> PendingSighting
         self._pending_sightings: dict[tuple[int, str], PendingSighting] = {}
         self._frame_counter = 0
+        # CSV match logger
+        self._match_log_file = None
+        self._match_log_writer = None
 
     def load(self):
         if self._yolo is None:
@@ -82,6 +104,7 @@ class DetectionService:
         self._running = True
         self._loop = loop
         self._frame_counter = 0
+        self._start_match_log()
         self._thread = threading.Thread(target=self._detection_loop, daemon=True)
         self._thread.start()
         logger.info("Detection service started")
@@ -93,11 +116,84 @@ class DetectionService:
             self._thread = None
         self._cooldowns.clear()
         self._pending_sightings.clear()
+        self._stop_match_log()
         logger.info("Detection service stopped")
 
     @property
     def is_running(self) -> bool:
         return self._running
+
+    # --- Match logging ---
+
+    def _start_match_log(self):
+        """Open CSV match log for writing."""
+        try:
+            write_header = not MATCH_LOG_PATH.exists() or MATCH_LOG_PATH.stat().st_size == 0
+            self._match_log_file = open(MATCH_LOG_PATH, "a", newline="", buffering=1)
+            self._match_log_writer = csv.writer(self._match_log_file)
+            if write_header:
+                self._match_log_writer.writerow([
+                    "timestamp", "item_name", "tracker_id", "similarity",
+                    "threshold", "matched", "source",
+                ])
+        except Exception:
+            logger.exception("Failed to open match log")
+            self._match_log_file = None
+            self._match_log_writer = None
+
+    def _stop_match_log(self):
+        """Close CSV match log."""
+        if self._match_log_file:
+            try:
+                self._match_log_file.close()
+            except Exception:
+                pass
+            self._match_log_file = None
+            self._match_log_writer = None
+
+    def _log_match(
+        self, item_name: str, tracker_id: int, similarity: float,
+        threshold: float, matched: bool, source: str,
+    ):
+        if self._match_log_writer:
+            try:
+                self._match_log_writer.writerow([
+                    datetime.now().isoformat(timespec="milliseconds"),
+                    item_name, tracker_id, f"{similarity:.4f}",
+                    f"{threshold:.2f}", "yes" if matched else "no", source,
+                ])
+            except Exception:
+                pass
+
+    # --- Crop preprocessing ---
+
+    @staticmethod
+    def _enhance_crop(crop_bgr: np.ndarray) -> np.ndarray:
+        """Apply CLAHE contrast enhancement and sharpening to a BGR crop."""
+        # Convert to LAB and enhance L channel
+        lab = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2LAB)
+        l_chan, a_chan, b_chan = cv2.split(lab)
+        l_chan = _clahe.apply(l_chan)
+        lab = cv2.merge([l_chan, a_chan, b_chan])
+        enhanced = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        # Sharpen
+        enhanced = cv2.filter2D(enhanced, -1, _sharpen_kernel)
+        return enhanced
+
+    # --- Dynamic threshold ---
+
+    @staticmethod
+    def _get_threshold(embedding_count: int, is_grid: bool) -> float:
+        """Pick similarity threshold based on how many photos the item has."""
+        if is_grid:
+            return GRID_CROP_SIMILARITY_THRESHOLD
+        if embedding_count >= 3:
+            return SIMILARITY_THRESHOLD_MULTI  # 0.70
+        if embedding_count == 1:
+            return SIMILARITY_THRESHOLD_SINGLE  # 0.80
+        return SIMILARITY_THRESHOLD  # 0.75
+
+    # --- Detection loop ---
 
     def _detection_loop(self):
         while self._running:
@@ -119,11 +215,12 @@ class DetectionService:
         h, w = frame.shape[:2]
 
         # --- YOLO detection + tracking ---
-        results = self._yolo(frame, verbose=False)[0]
+        results = self._yolo(frame, verbose=False, conf=YOLO_CONFIDENCE, iou=YOLO_IOU_THRESHOLD)[0]
         detections = sv.Detections.from_ultralytics(results)
 
         crops: list[Image.Image] = []
         crop_tracker_ids: list[int] = []
+        crop_sources: list[str] = []
 
         if len(detections) > 0:
             detections = self._tracker.update_with_detections(detections)
@@ -133,11 +230,14 @@ class DetectionService:
                 x2, y2 = min(w, x2), min(h, y2)
                 if x2 - x1 < 20 or y2 - y1 < 20:
                     continue
-                crop = frame[y1:y2, x1:x2]
-                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                crop_bgr = frame[y1:y2, x1:x2]
+                # Preprocessing: CLAHE + sharpen
+                enhanced = self._enhance_crop(crop_bgr)
+                crop_rgb = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
                 crops.append(Image.fromarray(crop_rgb))
                 tid = int(detections.tracker_id[i]) if detections.tracker_id is not None else i
                 crop_tracker_ids.append(tid)
+                crop_sources.append("yolo")
 
         # --- Grid crop fallback for custom items ---
         yolo_boxes = detections.xyxy if len(detections) > 0 else np.empty((0, 4))
@@ -146,12 +246,13 @@ class DetectionService:
             for gc, gid in zip(grid_crops, grid_ids):
                 crops.append(gc)
                 crop_tracker_ids.append(gid)
+                crop_sources.append("grid")
 
         if not crops:
             self._expire_pending_sightings()
             return
 
-        # --- Load registered items ---
+        # --- Load registered items (with all embeddings) ---
         future = asyncio.run_coroutine_threadsafe(
             self._load_registered_items(), self._loop
         )
@@ -165,14 +266,25 @@ class DetectionService:
 
         for crop_idx, emb in enumerate(crop_embeddings):
             tracker_id = crop_tracker_ids[crop_idx]
-            # Grid crops use a higher threshold
-            threshold = (
-                GRID_CROP_SIMILARITY_THRESHOLD if tracker_id < 0 else SIMILARITY_THRESHOLD
-            )
+            source = crop_sources[crop_idx]
+            is_grid = tracker_id < 0
 
             for item in registered_items:
-                similarity = clip_service.cosine_similarity(emb, item["embedding"])
-                if similarity < threshold:
+                # Compare against ALL embeddings for this item, take the best
+                best_sim = max(
+                    clip_service.cosine_similarity(emb, item_emb)
+                    for item_emb in item["embeddings"]
+                )
+
+                threshold = self._get_threshold(item["embedding_count"], is_grid)
+
+                # Log every comparison
+                matched = best_sim >= threshold
+                self._log_match(
+                    item["name"], tracker_id, best_sim, threshold, matched, source,
+                )
+
+                if not matched:
                     continue
 
                 # Check cooldown
@@ -186,12 +298,11 @@ class DetectionService:
                 if key in self._pending_sightings:
                     ps = self._pending_sightings[key]
                     ps.last_seen = now
-                    if similarity > ps.best_similarity:
-                        ps.best_similarity = similarity
+                    if best_sim > ps.best_similarity:
+                        ps.best_similarity = best_sim
                         ps.best_frame = frame.copy()
                 else:
                     if len(self._pending_sightings) >= MAX_PENDING:
-                        # Evict oldest
                         oldest_key = min(
                             self._pending_sightings,
                             key=lambda k: self._pending_sightings[k].first_seen,
@@ -202,7 +313,7 @@ class DetectionService:
                         item_name=item["name"],
                         first_seen=now,
                         last_seen=now,
-                        best_similarity=similarity,
+                        best_similarity=best_sim,
                         best_frame=frame.copy(),
                     )
 
@@ -214,11 +325,9 @@ class DetectionService:
         to_remove = []
         for key, ps in self._pending_sightings.items():
             tracker_id, item_name = key
-            # Expire if object disappeared
             if now - ps.last_seen > CONFIRMATION_MAX_GAP:
                 to_remove.append(key)
                 continue
-            # Confirm if visible long enough
             if now - ps.first_seen >= CONFIRMATION_SECONDS:
                 image_path = self._save_frame(ps.best_frame)
                 asyncio.run_coroutine_threadsafe(
@@ -265,13 +374,13 @@ class DetectionService:
                     if count >= GRID_CROP_MAX:
                         return crops, ids
                     box = np.array([x, y, x + sw, y + sh])
-                    # Skip if overlapping with a YOLO detection
                     if len(existing_boxes) > 0 and self._max_iou(box, existing_boxes) > 0.5:
                         continue
-                    crop = frame[y : y + sh, x : x + sw]
-                    crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                    crop_bgr = frame[y : y + sh, x : x + sw]
+                    # Preprocessing: CLAHE + sharpen
+                    enhanced = self._enhance_crop(crop_bgr)
+                    crop_rgb = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
                     crops.append(Image.fromarray(crop_rgb))
-                    # Stable negative ID based on grid position
                     grid_id = -(hash((x, y, sw, sh)) % 1_000_000 + 1)
                     ids.append(grid_id)
                     count += 1
@@ -300,20 +409,43 @@ class DetectionService:
 
     @staticmethod
     async def _load_registered_items() -> list[dict]:
+        """Load all registered items with ALL their embeddings from item_embeddings."""
         db = await get_db()
         try:
-            cursor = await db.execute(
-                "SELECT id, name, embedding FROM registered_items"
-            )
-            rows = await cursor.fetchall()
-            return [
-                {
-                    "id": row["id"],
-                    "name": row["name"],
-                    "embedding": deserialize_embedding(row["embedding"]),
-                }
-                for row in rows
-            ]
+            # Get all items
+            cursor = await db.execute("SELECT id, name FROM registered_items")
+            items = await cursor.fetchall()
+            if not items:
+                return []
+
+            result = []
+            for item in items:
+                cursor = await db.execute(
+                    "SELECT embedding FROM item_embeddings WHERE item_id = ?",
+                    (item["id"],),
+                )
+                emb_rows = await cursor.fetchall()
+                embeddings = [
+                    deserialize_embedding(r["embedding"]) for r in emb_rows
+                ]
+                # Fallback: if item_embeddings is empty, use the legacy column
+                if not embeddings:
+                    cursor = await db.execute(
+                        "SELECT embedding FROM registered_items WHERE id = ?",
+                        (item["id"],),
+                    )
+                    legacy_row = await cursor.fetchone()
+                    if legacy_row and legacy_row["embedding"]:
+                        embeddings = [deserialize_embedding(legacy_row["embedding"])]
+
+                if embeddings:
+                    result.append({
+                        "id": item["id"],
+                        "name": item["name"],
+                        "embeddings": embeddings,
+                        "embedding_count": len(embeddings),
+                    })
+            return result
         finally:
             await db.close()
 

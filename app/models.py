@@ -10,6 +10,7 @@ class ItemResponse(BaseModel):
     name: str
     image_path: str
     created_at: str
+    photo_count: int = 1
 
 
 class SightingResponse(BaseModel):
