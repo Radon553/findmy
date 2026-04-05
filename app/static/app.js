@@ -1,354 +1,211 @@
-let cameraRunning = false;
-let detectionRunning = false;
+/* === State === */
+let camOn = false, detOn = false, pollTimer = null;
 
-// --- Camera ---
-
-async function loadCameras() {
-    const select = document.getElementById('camera-select');
-    try {
-        const res = await fetch('/api/camera/list');
-        const cameras = await res.json();
-        select.innerHTML = '<option value="">Default Camera</option>';
-        cameras.forEach(cam => {
-            const opt = document.createElement('option');
-            opt.value = cam.index;
-            opt.textContent = cam.name;
-            select.appendChild(opt);
-        });
-    } catch (e) {
-        console.warn('Could not enumerate cameras:', e);
-    }
+/* === Tabs === */
+function openTab(t) {
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.t === t));
+    document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'p-' + t));
+    if (t === 'feed') loadSightings();
+    if (t === 'items') loadItems();
 }
 
-async function toggleCamera() {
-    const btn = document.getElementById('btn-camera');
-    const detectBtn = document.getElementById('btn-detect');
-    const cameraSelect = document.getElementById('camera-select');
+/* === Status pill === */
+function syncPill() {
+    const el = document.getElementById('status-pill');
+    if (detOn) { el.textContent = 'Detecting'; el.className = 'pill pill-detecting'; }
+    else if (camOn) { el.textContent = 'Camera On'; el.className = 'pill pill-camera'; }
+    else { el.textContent = 'Idle'; el.className = 'pill pill-idle'; }
+}
 
-    if (!cameraRunning) {
-        btn.textContent = 'Starting...';
-        btn.disabled = true;
-        const idx = cameraSelect.value;
-        const url = idx !== '' ? `/api/camera/start?camera_index=${idx}` : '/api/camera/start';
-        const res = await fetch(url, { method: 'POST' });
-        if (res.ok) {
-            cameraRunning = true;
-            btn.textContent = 'Stop Camera';
-            btn.classList.add('active');
-            btn.disabled = false;
-            detectBtn.disabled = false;
-            cameraSelect.disabled = true;
-            document.getElementById('btn-snap').disabled = false;
-            showFeed();
-            updateStatus();
+/* === Camera === */
+async function toggleCamera() {
+    const btn = document.getElementById('btn-cam');
+    if (!camOn) {
+        btn.textContent = 'Starting...'; btn.disabled = true;
+        const r = await fetch('/api/camera/start', { method: 'POST' });
+        if (r.ok) {
+            camOn = true; btn.textContent = 'Stop Camera'; btn.classList.add('active'); btn.disabled = false;
+            document.getElementById('btn-det').disabled = false;
+            const wrap = document.getElementById('cam-wrap'); wrap.style.display = '';
+            document.getElementById('cam-feed').src = '/api/camera/feed?' + Date.now();
         } else {
-            const data = await res.json();
-            alert(data.detail || 'Failed to start camera');
-            btn.textContent = 'Start Camera';
-            btn.disabled = false;
+            const d = await r.json(); alert(d.detail || 'Camera failed');
+            btn.textContent = 'Start Camera'; btn.disabled = false;
         }
     } else {
-        if (detectionRunning) {
-            await toggleDetection();
-        }
+        if (detOn) await toggleDetection();
         await fetch('/api/camera/stop', { method: 'POST' });
-        cameraRunning = false;
-        btn.textContent = 'Start Camera';
-        btn.classList.remove('active');
-        detectBtn.disabled = true;
-        cameraSelect.disabled = false;
-        document.getElementById('btn-snap').disabled = true;
-        hideFeed();
-        updateStatus();
+        camOn = false; btn.textContent = 'Start Camera'; btn.classList.remove('active');
+        document.getElementById('btn-det').disabled = true;
+        document.getElementById('cam-wrap').style.display = 'none';
+        document.getElementById('cam-feed').src = '';
     }
+    syncPill();
 }
 
-function showFeed() {
-    const feed = document.getElementById('camera-feed');
-    const placeholder = document.getElementById('feed-placeholder');
-    feed.src = '/api/camera/feed?' + Date.now();
-    feed.classList.add('active');
-    placeholder.style.display = 'none';
-}
-
-function hideFeed() {
-    const feed = document.getElementById('camera-feed');
-    const placeholder = document.getElementById('feed-placeholder');
-    feed.src = '';
-    feed.classList.remove('active');
-    placeholder.style.display = 'flex';
-}
-
-// --- Detection ---
-
+/* === Detection === */
 async function toggleDetection() {
-    const btn = document.getElementById('btn-detect');
-
-    if (!detectionRunning) {
-        btn.textContent = 'Starting...';
-        btn.disabled = true;
-        const res = await fetch('/api/detection/start', { method: 'POST' });
-        if (res.ok) {
-            detectionRunning = true;
-            btn.textContent = 'Stop Detection';
-            btn.classList.add('active');
-            btn.disabled = false;
-            updateStatus();
-        } else {
-            const data = await res.json();
-            alert(data.detail || 'Failed to start detection');
-            btn.textContent = 'Start Detection';
-            btn.disabled = false;
-        }
+    const btn = document.getElementById('btn-det');
+    if (!detOn) {
+        btn.textContent = 'Starting...'; btn.disabled = true;
+        const r = await fetch('/api/detection/start', { method: 'POST' });
+        if (r.ok) { detOn = true; btn.textContent = 'Stop Detection'; btn.classList.add('active'); btn.disabled = false; startSightingPoll(); }
+        else { const d = await r.json(); alert(d.detail || 'Detection failed'); btn.textContent = 'Start Detection'; btn.disabled = false; }
     } else {
         await fetch('/api/detection/stop', { method: 'POST' });
-        detectionRunning = false;
-        btn.textContent = 'Start Detection';
-        btn.classList.remove('active');
-        updateStatus();
+        detOn = false; btn.textContent = 'Start Detection'; btn.classList.remove('active'); stopSightingPoll();
     }
+    syncPill();
 }
 
-function updateStatus() {
-    const indicator = document.getElementById('status-indicator');
-    if (detectionRunning) {
-        indicator.textContent = 'Detecting';
-        indicator.className = 'status detecting';
-    } else if (cameraRunning) {
-        indicator.textContent = 'Camera On';
-        indicator.className = 'status camera-on';
-    } else {
-        indicator.textContent = 'Idle';
-        indicator.className = 'status off';
-    }
-}
+/* Auto-refresh sightings while detecting */
+function startSightingPoll() { stopSightingPoll(); pollTimer = setInterval(loadSightings, 4000); }
+function stopSightingPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
-// --- Search ---
-
-async function searchItem(e) {
+/* === Search === */
+async function doSearch(e) {
     e.preventDefault();
-    const query = document.getElementById('search-input').value.trim();
-    if (!query) return;
-
-    const resultsDiv = document.getElementById('search-results');
-    resultsDiv.innerHTML = '<p style="color:#666">Searching...</p>';
-
-    const res = await fetch(`/api/search/?q=${encodeURIComponent(query)}`);
-    const data = await res.json();
-
-    if (!data.length) {
-        resultsDiv.innerHTML = '<p class="no-results">No sightings found for that item. Make sure it\'s registered and detection is running.</p>';
-        return;
-    }
-
-    resultsDiv.innerHTML = data.map(r => `
+    const q = document.getElementById('q').value.trim();
+    if (!q) return;
+    const out = document.getElementById('search-results');
+    out.innerHTML = '<p class="no-results">Searching...</p>';
+    const r = await fetch('/api/search/?q=' + encodeURIComponent(q));
+    const data = await r.json();
+    if (!data.length) { out.innerHTML = '<p class="no-results">No sightings found. Make sure the item is registered.</p>'; return; }
+    out.innerHTML = data.map(s => `
         <div class="result-card">
-            <img src="${r.image_url}" alt="${r.item_name}">
-            <div class="result-info">
-                <h3>${r.item_name}</h3>
-                <p>Last seen: ${formatTime(r.last_seen)}</p>
-                <p class="confidence">Confidence: ${(r.similarity * 100).toFixed(1)}%</p>
+            <img src="${s.image_url}" alt="${s.item_name}">
+            <div class="result-body">
+                <h3>${s.item_name}</h3>
+                <p class="meta">Last seen <b>${fmtTime(s.last_seen)}</b></p>
+                <p class="meta">First seen ${fmtTime(s.first_seen)} &middot; ${s.sighting_count} total sighting${s.sighting_count !== 1 ? 's' : ''}</p>
+                <div class="sight-tags">
+                    <span class="tag tag-zone">${s.zone}</span>
+                    <span class="tag tag-conf">${(s.similarity * 100).toFixed(1)}%</span>
+                    ${s.nearby_objects.map(n => `<span class="tag tag-nearby">near ${n}</span>`).join('')}
+                </div>
             </div>
         </div>
     `).join('');
 }
 
-function formatTime(ts) {
-    const d = new Date(ts + 'Z');
-    return d.toLocaleString();
+/* === Sightings feed === */
+async function loadSightings() {
+    const r = await fetch('/api/search/recent?limit=30');
+    const data = await r.json();
+    const el = document.getElementById('sightings');
+    if (!data.length) { el.innerHTML = '<div class="empty">No sightings yet &mdash; register items and start detection</div>'; return; }
+    el.innerHTML = data.map(s => `
+        <div class="sight-card">
+            <img src="/data/images/${s.image_path}" alt="${s.item_name}" loading="lazy">
+            <div class="sight-info">
+                <span class="name">${s.item_name}</span>
+                <span class="detail">${fmtTime(s.timestamp)}</span>
+                <div class="sight-tags">
+                    <span class="tag tag-zone">${s.zone || 'center'}</span>
+                    <span class="tag tag-conf">${(s.similarity * 100).toFixed(1)}%</span>
+                    <span class="tag tag-source">${s.source || 'camera'}</span>
+                    ${(s.nearby_objects || []).map(n => `<span class="tag tag-nearby">near ${n}</span>`).join('')}
+                </div>
+            </div>
+        </div>
+    `).join('');
 }
 
-// --- Snapshot for registration ---
+/* === Video upload === */
+function onDragOver(e) { e.preventDefault(); document.getElementById('drop').classList.add('drag-over'); }
+function onDragLeave(e) { document.getElementById('drop').classList.remove('drag-over'); }
+function onDrop(e) {
+    e.preventDefault(); document.getElementById('drop').classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f && f.type.startsWith('video/')) uploadVideo(f);
+}
+function onFileSelect(e) { const f = e.target.files[0]; if (f) uploadVideo(f); }
 
-let _snapshotBlobs = [];
+async function uploadVideo(file) {
+    const wrap = document.getElementById('prog-wrap'); wrap.style.display = '';
+    const label = document.getElementById('prog-label');
+    const pct = document.getElementById('prog-pct');
+    const bar = document.getElementById('prog-bar');
+    const detail = document.getElementById('prog-detail');
+    label.textContent = 'Uploading...'; pct.textContent = ''; bar.style.width = '0%'; detail.textContent = '';
 
-async function takeSnapshot() {
-    const btn = document.getElementById('btn-snap');
-    const previewsDiv = document.getElementById('snap-previews');
-    const photoInput = document.getElementById('item-photo');
-    const statusDiv = document.getElementById('register-status');
-
-    btn.textContent = 'Capturing...';
-    btn.disabled = true;
-
-    try {
-        const res = await fetch('/api/camera/snapshot');
-        if (!res.ok) throw new Error('Camera not ready');
-        const blob = await res.blob();
-        _snapshotBlobs.push(blob);
-
-        // Clear any file selection — snapshots take precedence
-        photoInput.value = '';
-
-        // Add preview thumbnail
-        const url = URL.createObjectURL(blob);
-        const thumb = document.createElement('div');
-        thumb.className = 'snap-thumb';
-        thumb.innerHTML = `<img src="${url}" alt="Snapshot ${_snapshotBlobs.length}">
-            <span class="snap-num">${_snapshotBlobs.length}</span>`;
-        previewsDiv.appendChild(thumb);
-
-        const count = _snapshotBlobs.length;
-        statusDiv.innerHTML = `<span style="color:#00d4ff">${count} photo${count > 1 ? 's' : ''} captured. Take more or click Register.</span>`;
-    } catch (err) {
-        statusDiv.innerHTML = `<span class="error">Could not capture: ${err.message}</span>`;
-    }
-
-    btn.textContent = 'Take Another Photo';
-    btn.disabled = false;
+    const fd = new FormData(); fd.append('file', file);
+    const r = await fetch('/api/video/upload', { method: 'POST', body: fd });
+    if (!r.ok) { const d = await r.json(); label.textContent = 'Error: ' + (d.detail || 'Upload failed'); return; }
+    const job = await r.json();
+    pollVideoJob(job.job_id);
 }
 
-// --- Register ---
+function pollVideoJob(jobId) {
+    const iv = setInterval(async () => {
+        const r = await fetch('/api/video/status/' + jobId);
+        const j = await r.json();
+        const pct = document.getElementById('prog-pct');
+        const bar = document.getElementById('prog-bar');
+        const label = document.getElementById('prog-label');
+        const detail = document.getElementById('prog-detail');
+        const p = Math.round(j.progress * 100);
+        pct.textContent = p + '%'; bar.style.width = p + '%';
+        detail.textContent = `${j.processed_frames}/${j.total_frames} frames \u00b7 ${j.sightings_found} sighting${j.sightings_found !== 1 ? 's' : ''} found`;
+        if (j.status === 'completed') {
+            clearInterval(iv); label.textContent = 'Done!'; loadSightings(); openTab('feed');
+        } else if (j.status === 'error') {
+            clearInterval(iv); label.textContent = 'Error: ' + (j.error || 'Processing failed');
+        } else { label.textContent = 'Processing...'; }
+    }, 1000);
+}
 
+/* === Register item === */
 async function registerItem(e) {
     e.preventDefault();
-    const nameInput = document.getElementById('item-name');
-    const photoInput = document.getElementById('item-photo');
-    const previewsDiv = document.getElementById('snap-previews');
-    const statusDiv = document.getElementById('register-status');
-
-    const name = nameInput.value.trim();
-    if (!name) return;
-
-    const form = new FormData();
-    form.append('name', name);
-
-    // Determine photo source: snapshot blobs > file input
-    if (_snapshotBlobs.length > 0) {
-        _snapshotBlobs.forEach((blob, i) => {
-            form.append('photos', new File([blob], `snapshot_${i + 1}.jpg`, { type: 'image/jpeg' }));
-        });
-    } else if (photoInput.files.length > 0) {
-        for (const file of photoInput.files) {
-            form.append('photos', file);
-        }
-    } else {
-        statusDiv.innerHTML = '<span class="error">Please upload photo(s) or take them with the camera.</span>';
-        return;
-    }
-
-    statusDiv.innerHTML = '<span style="color:#666">Registering... (generating CLIP embeddings)</span>';
-
-    const res = await fetch('/api/items/register', { method: 'POST', body: form });
-    const data = await res.json();
-
-    if (res.ok) {
-        statusDiv.innerHTML = `<span class="success">Registered "${data.name}" with ${data.photo_count} photo(s)!</span>`;
-        nameInput.value = '';
-        photoInput.value = '';
-        _snapshotBlobs = [];
-        previewsDiv.innerHTML = '';
-        document.getElementById('btn-snap').textContent = 'Take Photo';
-        loadItems();
-    } else {
-        let errMsg = 'Registration failed';
-        if (data.detail) {
-            errMsg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
-        }
-        statusDiv.innerHTML = `<span class="error">${errMsg}</span>`;
-    }
+    const nameEl = document.getElementById('item-name');
+    const photoEl = document.getElementById('item-photo');
+    const status = document.getElementById('reg-status');
+    const name = nameEl.value.trim();
+    if (!name || !photoEl.files.length) { status.innerHTML = '<span class="error">Name and at least one photo required</span>'; return; }
+    status.innerHTML = '<span style="color:var(--muted)">Registering... (generating embeddings)</span>';
+    const fd = new FormData(); fd.append('name', name);
+    for (const f of photoEl.files) fd.append('photos', f);
+    const r = await fetch('/api/items/register', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (r.ok) { status.innerHTML = `<span class="success">Registered "${d.name}" with ${d.photo_count} photo(s)</span>`; nameEl.value = ''; photoEl.value = ''; loadItems(); }
+    else { status.innerHTML = `<span class="error">${typeof d.detail === 'string' ? d.detail : 'Registration failed'}</span>`; }
 }
 
-// --- Add photo to existing item ---
-
-async function addPhotoToItem(itemId, itemName) {
-    if (!cameraRunning) {
-        alert('Start the camera first to take a photo.');
-        return;
-    }
-
-    const res = await fetch('/api/camera/snapshot');
-    if (!res.ok) {
-        alert('Could not capture photo. Is the camera running?');
-        return;
-    }
-    const blob = await res.blob();
-    const form = new FormData();
-    form.append('photo', new File([blob], 'additional.jpg', { type: 'image/jpeg' }));
-
-    const statusDiv = document.getElementById('register-status');
-    statusDiv.innerHTML = `<span style="color:#666">Adding photo to "${itemName}"...</span>`;
-
-    const addRes = await fetch(`/api/items/${itemId}/add-photo`, { method: 'POST', body: form });
-    const data = await addRes.json();
-
-    if (addRes.ok) {
-        statusDiv.innerHTML = `<span class="success">Added photo to "${data.name}" (${data.photo_count} total)</span>`;
-        loadItems();
-    } else {
-        statusDiv.innerHTML = `<span class="error">${data.detail || 'Failed to add photo'}</span>`;
-    }
-}
-
-// --- Items List ---
-
+/* === Items list === */
 async function loadItems() {
-    const res = await fetch('/api/items/');
-    const items = await res.json();
-    const container = document.getElementById('items-list');
-
-    if (!items.length) {
-        container.innerHTML = '<p style="color:#666">No items registered yet. Register an item above to start tracking.</p>';
-        return;
-    }
-
-    container.innerHTML = items.map(item => `
+    const r = await fetch('/api/items/');
+    const items = await r.json();
+    const el = document.getElementById('items-grid');
+    if (!items.length) { el.innerHTML = '<div class="empty">No items registered yet</div>'; return; }
+    el.innerHTML = items.map(i => `
         <div class="item-card">
-            <img src="/data/registered/${item.image_path}" alt="${item.name}">
-            <div class="item-card-body">
-                <div class="item-card-info">
-                    <span>${item.name}</span>
-                    <span class="photo-count">${item.photo_count} photo${item.photo_count !== 1 ? 's' : ''}</span>
+            <img src="/data/registered/${i.image_path}" alt="${i.name}">
+            <div class="item-body">
+                <div class="item-top">
+                    <span>${i.name}</span>
+                    <span class="photo-cnt">${i.photo_count} photo${i.photo_count !== 1 ? 's' : ''}</span>
                 </div>
-                <div class="item-card-actions">
-                    <button class="btn btn-snap btn-small" onclick="addPhotoToItem(${item.id}, '${item.name}')">+ Photo</button>
-                    <button class="btn btn-danger btn-small" onclick="deleteItem(${item.id}, '${item.name}')">Remove</button>
-                </div>
+                <button class="btn btn-red" onclick="deleteItem(${i.id},'${i.name}')">Remove</button>
             </div>
         </div>
     `).join('');
 }
-
 async function deleteItem(id, name) {
-    if (!confirm(`Remove "${name}" from tracked items?`)) return;
-    const res = await fetch(`/api/items/${id}`, { method: 'DELETE' });
-    if (res.ok) {
-        loadItems();
-    }
+    if (!confirm('Remove "' + name + '"?')) return;
+    await fetch('/api/items/' + id, { method: 'DELETE' }); loadItems();
 }
 
-// --- Init ---
+/* === Helpers === */
+function fmtTime(ts) { try { return new Date(ts + 'Z').toLocaleString(); } catch { return ts; } }
 
-async function init() {
-    const [camRes, detRes] = await Promise.all([
-        fetch('/api/camera/status'),
-        fetch('/api/detection/status')
-    ]);
-    const camData = await camRes.json();
-    const detData = await detRes.json();
-
-    cameraRunning = camData.running;
-    detectionRunning = detData.running;
-
-    const camBtn = document.getElementById('btn-camera');
-    const detBtn = document.getElementById('btn-detect');
-
-    await loadCameras();
-
-    if (cameraRunning) {
-        camBtn.textContent = 'Stop Camera';
-        camBtn.classList.add('active');
-        detBtn.disabled = false;
-        document.getElementById('camera-select').disabled = true;
-        document.getElementById('btn-snap').disabled = false;
-    }
-    if (detectionRunning) {
-        detBtn.textContent = 'Stop Detection';
-        detBtn.classList.add('active');
-    }
-
-    updateStatus();
-    loadItems();
-}
-
-init();
+/* === Init === */
+(async () => {
+    const [cr, dr] = await Promise.all([fetch('/api/camera/status'), fetch('/api/detection/status')]);
+    const cd = await cr.json(), dd = await dr.json();
+    camOn = cd.running; detOn = dd.running;
+    if (camOn) { document.getElementById('btn-cam').textContent = 'Stop Camera'; document.getElementById('btn-cam').classList.add('active'); document.getElementById('btn-det').disabled = false; document.getElementById('cam-wrap').style.display = ''; document.getElementById('cam-feed').src = '/api/camera/feed?' + Date.now(); }
+    if (detOn) { document.getElementById('btn-det').textContent = 'Stop Detection'; document.getElementById('btn-det').classList.add('active'); startSightingPoll(); }
+    syncPill(); loadSightings(); loadItems();
+})();

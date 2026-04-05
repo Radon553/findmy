@@ -4,66 +4,94 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FindThis</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <header>
-        <h1>FindThis</h1>
-        <p class="subtitle">Wearable AI Memory</p>
-    </header>
 
-    <main>
-        <!-- Controls -->
-        <section class="controls">
-            <select id="camera-select">
-                <option value="">Default Camera</option>
-            </select>
-            <button id="btn-camera" class="btn" onclick="toggleCamera()">Start Camera</button>
-            <button id="btn-detect" class="btn" onclick="toggleDetection()" disabled>Start Detection</button>
-            <span id="status-indicator" class="status off">Idle</span>
-        </section>
+<nav class="navbar">
+    <div class="nav-brand">
+        <svg class="nav-logo" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <span>FindThis</span>
+    </div>
+    <span id="status-pill" class="pill pill-idle">Idle</span>
+</nav>
 
-        <!-- Camera Feed -->
-        <section class="camera-section">
-            <div class="feed-container">
-                <img id="camera-feed" src="" alt="Camera feed will appear here">
-                <div id="feed-placeholder" class="placeholder">Camera Off</div>
-            </div>
-        </section>
+<main>
 
-        <!-- Search -->
-        <section class="search-section">
-            <h2>Find My Stuff</h2>
-            <form id="search-form" onsubmit="searchItem(event)">
-                <input type="text" id="search-input" placeholder='Try "where are my keys?"' autocomplete="off">
-                <button type="submit" class="btn btn-search">Search</button>
-            </form>
-            <div id="search-results"></div>
-        </section>
+    <!-- Search hero -->
+    <section class="hero">
+        <h1>Where did I leave my&hellip;</h1>
+        <form class="search-bar" onsubmit="doSearch(event)">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input id="q" type="text" placeholder='Try "where are my keys?" or just "wallet"' autocomplete="off">
+        </form>
+        <div id="search-results"></div>
+    </section>
 
-        <!-- Register Item -->
-        <section class="register-section">
-            <h2>Register an Item</h2>
-            <form id="register-form" onsubmit="registerItem(event)">
-                <input type="text" id="item-name" placeholder="Item name (e.g. keys)" required>
-                <div class="photo-input-row">
-                    <input type="file" id="item-photo" accept="image/*" multiple>
-                    <span class="photo-or">or</span>
-                    <button type="button" id="btn-snap" class="btn btn-snap" onclick="takeSnapshot()" disabled>Take Photo</button>
+    <!-- Tab bar -->
+    <div class="tab-bar">
+        <button class="tab active" data-t="feed" onclick="openTab('feed')">Sightings</button>
+        <button class="tab" data-t="source" onclick="openTab('source')">Source</button>
+        <button class="tab" data-t="items" onclick="openTab('items')">Items</button>
+    </div>
+
+    <!-- Sightings feed -->
+    <section id="p-feed" class="panel active">
+        <div id="sightings" class="sight-grid">
+            <div class="empty">No sightings yet &mdash; register items and start detection</div>
+        </div>
+    </section>
+
+    <!-- Source (camera / video upload) -->
+    <section id="p-source" class="panel">
+        <div class="src-row">
+            <div class="src-card">
+                <h3>Live Camera</h3>
+                <div class="btn-row">
+                    <button id="btn-cam" class="btn" onclick="toggleCamera()">Start Camera</button>
+                    <button id="btn-det" class="btn" onclick="toggleDetection()" disabled>Start Detection</button>
                 </div>
-                <div id="snap-previews" class="snap-previews"></div>
-                <button type="submit" class="btn btn-register">Register</button>
-            </form>
-            <div id="register-status"></div>
-        </section>
+            </div>
+            <div class="src-divider"><span>or</span></div>
+            <div class="src-card">
+                <h3>Upload Video</h3>
+                <div id="drop" class="dropzone" ondrop="onDrop(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)">
+                    <input type="file" id="vid-file" accept="video/*" onchange="onFileSelect(event)" hidden>
+                    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <p>Drag &amp; drop video here</p>
+                    <span>or <a href="#" onclick="document.getElementById('vid-file').click();return false">browse</a></span>
+                </div>
+                <div id="prog-wrap" class="prog-wrap" style="display:none">
+                    <div class="prog-head"><span id="prog-label">Processing...</span><span id="prog-pct">0%</span></div>
+                    <div class="prog-track"><div id="prog-bar" class="prog-bar"></div></div>
+                    <p id="prog-detail" class="prog-detail"></p>
+                </div>
+            </div>
+        </div>
+        <div id="cam-wrap" class="cam-wrap" style="display:none">
+            <img id="cam-feed" src="">
+        </div>
+    </section>
 
-        <!-- Registered Items -->
-        <section class="items-section">
-            <h2>Tracked Items</h2>
-            <div id="items-list" class="items-grid"></div>
-        </section>
-    </main>
+    <!-- Items -->
+    <section id="p-items" class="panel">
+        <form class="reg-bar" onsubmit="registerItem(event)">
+            <input id="item-name" type="text" placeholder="Item name (e.g. keys)" required>
+            <label class="file-label" for="item-photo">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                Photo
+            </label>
+            <input type="file" id="item-photo" accept="image/*" multiple hidden>
+            <button class="btn btn-green" type="submit">Register</button>
+        </form>
+        <p id="reg-status"></p>
+        <div id="items-grid" class="items-grid"></div>
+    </section>
 
-    <script src="/app.js"></script>
+</main>
+
+<script src="/app.js"></script>
 </body>
 </html>
