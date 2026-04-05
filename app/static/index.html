@@ -39,8 +39,12 @@
 
     <!-- Sightings feed -->
     <section id="p-feed" class="panel active">
+        <div class="feed-header">
+            <span id="sight-count" class="sight-count"></span>
+            <button class="btn btn-red" onclick="clearAllSightings()" id="btn-clear" style="display:none">Clear All</button>
+        </div>
         <div id="sightings" class="sight-grid">
-            <div class="empty">No sightings yet &mdash; register items and start detection</div>
+            <div class="empty">No sightings yet &mdash; start camera + detection to begin auto-logging</div>
         </div>
     </section>
 

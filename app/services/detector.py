@@ -41,7 +41,7 @@ from app.config import (
     AUTO_DETECT_COOLDOWN,
     AUTO_DETECT_MIN_CONFIDENCE,
 )
-from app.database import get_db, deserialize_embedding
+from app.database import get_db, deserialize_embedding, serialize_embedding
 from app.services.camera import camera_service
 from app.services.clip_service import clip_service
 
@@ -331,7 +331,7 @@ class DetectionService:
             if now - ps.last_seen > CONFIRMATION_MAX_GAP:
                 to_rm.append(key); continue
             if now - ps.first_seen >= CONFIRMATION_SECONDS and ps.match_count >= MIN_MATCH_COUNT:
-                path = self._save_frame(ps.best_frame)
+                path = self._save_frame(ps.best_frame, label=ps.item_name, cx=ps.bbox_cx, cy=ps.bbox_cy)
                 asyncio.run_coroutine_threadsafe(
                     self._save_sighting(ps.item_id, ps.item_name, path, ps.best_similarity, ps.zone, ps.bbox_cx, ps.bbox_cy, ps.nearby_objects, "camera"),
                     self._loop,
@@ -379,8 +379,26 @@ class DetectionService:
         inter = np.maximum(0, x2-x1) * np.maximum(0, y2-y1)
         return float((inter / np.maximum((box[2]-box[0])*(box[3]-box[1]) + (boxes[:,2]-boxes[:,0])*(boxes[:,3]-boxes[:,1]) - inter, 1e-6)).max())
 
-    def _save_frame(self, frame):
+    @staticmethod
+    def _draw_bbox(frame, label, cx_norm, cy_norm, bbox_w_norm=0.15, bbox_h_norm=0.15, color=(99, 102, 241)):
+        """Draw a bounding box + label on a frame copy. Returns the annotated copy."""
+        out = frame.copy()
+        h, w = out.shape[:2]
+        bw, bh = int(bbox_w_norm * w / 2), int(bbox_h_norm * h / 2)
+        px, py = int(cx_norm * w), int(cy_norm * h)
+        x1, y1 = max(0, px - bw), max(0, py - bh)
+        x2, y2 = min(w, px + bw), min(h, py + bh)
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        # Label background
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(out, (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
+        cv2.putText(out, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        return out
+
+    def _save_frame(self, frame, label=None, cx=None, cy=None):
         fn = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+        if label and cx is not None and cy is not None:
+            frame = self._draw_bbox(frame, label, cx, cy)
         cv2.imwrite(str(IMAGES_DIR / fn), frame)
         return fn
 
@@ -423,7 +441,8 @@ class DetectionService:
     # --- Auto-detect: log all YOLO detections without registration ---
 
     def _auto_log_detections(self, frame, detections, yolo_names):
-        """Save every YOLO-detected object automatically (cooldown per class+zone)."""
+        """Save every YOLO-detected object automatically (cooldown per class+zone).
+        Also auto-registers new item classes with a CLIP embedding from the crop."""
         if not AUTO_DETECT_ENABLED or len(detections) == 0:
             return
         now = time.time()
@@ -447,7 +466,17 @@ class DetectionService:
             self._auto_cooldowns[key] = now
 
             nearby = self._get_nearby(i, detections, yolo_names)
-            path = self._save_frame(frame)
+            path = self._save_frame(frame, label=f"{class_name} {conf:.0%}", cx=cx, cy=cy)
+
+            # Auto-register as a tracked item if not already registered
+            crop_bgr = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+            if crop_bgr.size > 0:
+                crop_pil = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
+                emb = clip_service.get_image_embedding(crop_pil)
+                if self._loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._auto_register_item(class_name, path, emb), self._loop
+                    )
 
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
@@ -460,6 +489,34 @@ class DetectionService:
         expired = [k for k, t in self._auto_cooldowns.items() if now - t > AUTO_DETECT_COOLDOWN * 2]
         for k in expired:
             del self._auto_cooldowns[k]
+
+    @staticmethod
+    async def _auto_register_item(class_name, image_path, embedding):
+        """Auto-register a YOLO-detected class as a tracked item (idempotent)."""
+        db = await get_db()
+        try:
+            cursor = await db.execute("SELECT id FROM registered_items WHERE name=?", (class_name,))
+            existing = await cursor.fetchone()
+            if existing:
+                return  # Already registered
+            emb_json = serialize_embedding(embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
+            await db.execute(
+                "INSERT INTO registered_items (name, image_path, embedding) VALUES (?, ?, ?)",
+                (class_name, image_path, emb_json),
+            )
+            cursor = await db.execute("SELECT id FROM registered_items WHERE name=?", (class_name,))
+            row = await cursor.fetchone()
+            if row:
+                await db.execute(
+                    "INSERT INTO item_embeddings (item_id, embedding, source) VALUES (?, ?, ?)",
+                    (row["id"], emb_json, "auto"),
+                )
+            await db.commit()
+            logger.info(f"[auto-register] Created item '{class_name}' with CLIP embedding")
+        except Exception:
+            logger.exception(f"Failed to auto-register '{class_name}'")
+        finally:
+            await db.close()
 
 
 detection_service = DetectionService()

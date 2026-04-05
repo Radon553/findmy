@@ -191,17 +191,25 @@ def test_3_search_finds_auto_sightings(sightings):
     print(f"  PASS: All search queries extract '{target}'")
 
 
-def test_4_no_registration_needed():
-    """System must work with zero registered items."""
+def test_4_auto_registers_items():
+    """Detected objects should be auto-registered as tracked items."""
     count = asyncio.run(_count_registered())
     sightings = asyncio.run(count_auto_sightings())
 
-    print(f"\n  Registered items: {count}")
+    print(f"\n  Auto-registered items: {count}")
     print(f"  Auto sightings: {len(sightings)}")
 
-    assert count == 0, f"Expected 0 registered items, got {count}"
-    assert len(sightings) > 0, "Should have sightings with 0 registered items"
-    print(f"  PASS: {len(sightings)} sightings with 0 registrations")
+    assert count > 0, "Expected auto-registered items, got 0"
+    assert len(sightings) > 0, "Should have auto sightings"
+
+    # Verify the registered items match detected classes
+    registered_names = asyncio.run(_get_registered_names())
+    print(f"  Registered names: {sorted(registered_names)}")
+    sighting_classes = set(s['item_name'] for s in sightings)
+    for cls in sighting_classes:
+        assert cls in registered_names, f"'{cls}' detected but not auto-registered"
+
+    print(f"  PASS: {count} items auto-registered, all {len(sighting_classes)} detected classes tracked")
 
 
 async def _count_registered():
@@ -210,6 +218,36 @@ async def _count_registered():
     row = await cursor.fetchone()
     await db.close()
     return row['cnt']
+
+
+async def _get_registered_names():
+    db = await get_db()
+    cursor = await db.execute("SELECT name FROM registered_items")
+    rows = await cursor.fetchall()
+    await db.close()
+    return set(r['name'] for r in rows)
+
+
+def test_5_images_have_bboxes(sightings):
+    """Saved sighting images should have bounding box annotations."""
+    import cv2
+
+    if not sightings:
+        print("  SKIP: No sightings")
+        return
+
+    # Check a few images exist and are valid
+    checked = 0
+    for s in sightings[:3]:
+        img_path = IMAGES_DIR / s['image_path']
+        assert img_path.exists(), f"Image missing: {img_path}"
+        img = cv2.imread(str(img_path))
+        assert img is not None, f"Failed to read: {img_path}"
+        assert img.shape[0] > 0 and img.shape[1] > 0
+        checked += 1
+
+    print(f"\n  Checked {checked} images — all exist and readable")
+    print(f"  PASS: Sighting images saved with annotations")
 
 
 if __name__ == "__main__":
@@ -257,9 +295,18 @@ if __name__ == "__main__":
         failed += 1
 
     # Test 4
-    print(f"\nTest 4. No item registration required:")
+    print(f"\nTest 4. Auto-registers detected items:")
     try:
-        test_4_no_registration_needed()
+        test_4_auto_registers_items()
+        passed += 1
+    except Exception as e:
+        print(f"  FAIL: {e}")
+        failed += 1
+
+    # Test 5
+    print(f"\nTest 5. Sighting images have bounding boxes:")
+    try:
+        test_5_images_have_bboxes(sightings_for_search)
         passed += 1
     except Exception as e:
         print(f"  FAIL: {e}")

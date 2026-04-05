@@ -94,7 +94,16 @@ async function loadSightings() {
     const r = await fetch('/api/search/recent?limit=30');
     const data = await r.json();
     const el = document.getElementById('sightings');
-    if (!data.length) { el.innerHTML = '<div class="empty">No sightings yet &mdash; start camera + detection to begin auto-logging</div>'; return; }
+    const countEl = document.getElementById('sight-count');
+    const clearBtn = document.getElementById('btn-clear');
+    if (!data.length) {
+        el.innerHTML = '<div class="empty">No sightings yet &mdash; start camera + detection to begin auto-logging</div>';
+        countEl.textContent = '';
+        clearBtn.style.display = 'none';
+        return;
+    }
+    countEl.textContent = `${data.length} sighting${data.length !== 1 ? 's' : ''}`;
+    clearBtn.style.display = '';
     el.innerHTML = data.map(s => {
         const isAuto = s.source === 'auto';
         const confLabel = isAuto ? `${(s.similarity * 100).toFixed(0)}% conf` : `${(s.similarity * 100).toFixed(1)}% match`;
@@ -102,7 +111,10 @@ async function loadSightings() {
         <div class="sight-card${isAuto ? ' sight-auto' : ''}">
             <img src="/data/images/${s.image_path}" alt="${s.item_name}" loading="lazy">
             <div class="sight-info">
-                <span class="name">${s.item_name}${isAuto ? ' <span class="badge-auto">auto</span>' : ''}</span>
+                <div class="sight-header">
+                    <span class="name">${s.item_name}${isAuto ? ' <span class="badge-auto">auto</span>' : ''}</span>
+                    <button class="btn-delete" onclick="deleteSighting(${s.id})" title="Delete sighting">&times;</button>
+                </div>
                 <span class="detail">${fmtTime(s.timestamp)}</span>
                 <div class="sight-tags">
                     <span class="tag tag-zone">${s.zone || 'center'}</span>
@@ -113,6 +125,17 @@ async function loadSightings() {
             </div>
         </div>`;
     }).join('');
+}
+
+/* === Delete sightings === */
+async function deleteSighting(id) {
+    await fetch('/api/search/sightings/' + id, { method: 'DELETE' });
+    loadSightings();
+}
+async function clearAllSightings() {
+    if (!confirm('Delete all sightings? This cannot be undone.')) return;
+    await fetch('/api/search/sightings', { method: 'DELETE' });
+    loadSightings();
 }
 
 /* === Video upload === */

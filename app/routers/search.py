@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
+from app.config import IMAGES_DIR
 from app.database import get_db
 from app.models import SearchResult, SightingResponse, EventResponse
 
@@ -143,3 +145,41 @@ async def item_events(item_name: str, limit: int = 50):
         )
         for row in rows
     ]
+
+
+@router.delete("/sightings/{sighting_id}")
+async def delete_sighting(sighting_id: int):
+    """Delete a single sighting and its image."""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT image_path FROM sightings WHERE id=?", (sighting_id,))
+        row = await cursor.fetchone()
+        if not row:
+            raise HTTPException(404, "Sighting not found")
+        # Delete image file
+        img = IMAGES_DIR / row["image_path"]
+        if img.exists():
+            img.unlink(missing_ok=True)
+        await db.execute("DELETE FROM sightings WHERE id=?", (sighting_id,))
+        await db.commit()
+    finally:
+        await db.close()
+    return {"status": "deleted", "id": sighting_id}
+
+
+@router.delete("/sightings")
+async def clear_all_sightings():
+    """Delete all sightings and their images."""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT image_path FROM sightings")
+        rows = await cursor.fetchall()
+        for row in rows:
+            img = IMAGES_DIR / row["image_path"]
+            if img.exists():
+                img.unlink(missing_ok=True)
+        await db.execute("DELETE FROM sightings")
+        await db.commit()
+    finally:
+        await db.close()
+    return {"status": "cleared", "deleted": len(rows)}
