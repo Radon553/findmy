@@ -41,9 +41,10 @@ from app.config import (
     AUTO_DETECT_COOLDOWN,
     AUTO_DETECT_MIN_CONFIDENCE,
 )
+from app.config import REGISTERED_DIR
 from app.database import get_db, deserialize_embedding, serialize_embedding
 from app.services.camera import camera_service
-from app.services.clip_service import clip_service
+from app.services.clip_service import clip_service, CLIP_VOCAB
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class PendingSighting:
     bbox_cy: float = 0.5
     zone: str = "center"
     nearby_objects: list[str] = field(default_factory=list)
+    bbox_pixels: tuple = (0, 0, 100, 100)  # (x1, y1, x2, y2) actual pixel coords
 
 
 class DetectionService:
@@ -245,7 +247,7 @@ class DetectionService:
         detections = sv.Detections.from_ultralytics(results)
         yolo_names = self._yolo.names
 
-        crops, tids, sources, bboxes, det_idxs = [], [], [], [], []
+        crops, tids, sources, bboxes, det_idxs, pixel_bboxes = [], [], [], [], [], []
 
         if len(detections) > 0:
             detections = self._tracker.update_with_detections(detections)
@@ -261,13 +263,18 @@ class DetectionService:
                 tids.append(int(detections.tracker_id[i]) if detections.tracker_id is not None else i)
                 sources.append("yolo")
                 bboxes.append(((x1 + x2) / 2 / w, (y1 + y2) / 2 / h))
+                pixel_bboxes.append((x1, y1, x2, y2))
                 det_idxs.append(i)
 
         yolo_boxes = detections.xyxy if len(detections) > 0 else np.empty((0, 4))
         if GRID_CROP_ENABLED:
             gc, gi, gctr = self._grid_crops(frame, yolo_boxes)
             for c, i, ct in zip(gc, gi, gctr):
-                crops.append(c); tids.append(i); sources.append("grid"); bboxes.append(ct); det_idxs.append(-1)
+                crops.append(c); tids.append(i); sources.append("grid"); bboxes.append(ct)
+                # Estimate pixel bbox from grid center
+                gcx, gcy = int(ct[0] * w), int(ct[1] * h)
+                pixel_bboxes.append((max(0, gcx - 60), max(0, gcy - 60), min(w, gcx + 60), min(h, gcy + 60)))
+                det_idxs.append(-1)
 
         if not crops:
             self._expire_pending()
@@ -286,6 +293,7 @@ class DetectionService:
         for ci, emb in enumerate(embs):
             tid, src, is_grid = tids[ci], sources[ci], tids[ci] < 0
             cx, cy = bboxes[ci]
+            pbox = pixel_bboxes[ci]
             di = det_idxs[ci]
             zone = compute_zone(cx, cy)
             nearby = self._get_nearby(di, detections, yolo_names) if di >= 0 else []
@@ -308,6 +316,7 @@ class DetectionService:
                     ps.zone = zone
                     ps.bbox_cx = cx
                     ps.bbox_cy = cy
+                    ps.bbox_pixels = pbox
                     ps.nearby_objects = nearby
                     if best > ps.best_similarity:
                         ps.best_similarity = best
@@ -320,6 +329,7 @@ class DetectionService:
                         first_seen=now, last_seen=now, best_similarity=best,
                         best_frame=frame.copy(), match_count=1,
                         bbox_cx=cx, bbox_cy=cy, zone=zone, nearby_objects=nearby,
+                        bbox_pixels=pbox,
                     )
 
         self._confirm_pending(now)
@@ -331,7 +341,7 @@ class DetectionService:
             if now - ps.last_seen > CONFIRMATION_MAX_GAP:
                 to_rm.append(key); continue
             if now - ps.first_seen >= CONFIRMATION_SECONDS and ps.match_count >= MIN_MATCH_COUNT:
-                path = self._save_frame(ps.best_frame, label=ps.item_name, cx=ps.bbox_cx, cy=ps.bbox_cy)
+                path = self._save_frame(ps.best_frame, label=ps.item_name, bbox=ps.bbox_pixels)
                 asyncio.run_coroutine_threadsafe(
                     self._save_sighting(ps.item_id, ps.item_name, path, ps.best_similarity, ps.zone, ps.bbox_cx, ps.bbox_cy, ps.nearby_objects, "camera"),
                     self._loop,
@@ -380,25 +390,20 @@ class DetectionService:
         return float((inter / np.maximum((box[2]-box[0])*(box[3]-box[1]) + (boxes[:,2]-boxes[:,0])*(boxes[:,3]-boxes[:,1]) - inter, 1e-6)).max())
 
     @staticmethod
-    def _draw_bbox(frame, label, cx_norm, cy_norm, bbox_w_norm=0.15, bbox_h_norm=0.15, color=(99, 102, 241)):
-        """Draw a bounding box + label on a frame copy. Returns the annotated copy."""
+    def _draw_bbox_pixels(frame, label, x1, y1, x2, y2, color=(99, 102, 241)):
+        """Draw a bounding box using actual pixel coordinates on a frame copy."""
         out = frame.copy()
-        h, w = out.shape[:2]
-        bw, bh = int(bbox_w_norm * w / 2), int(bbox_h_norm * h / 2)
-        px, py = int(cx_norm * w), int(cy_norm * h)
-        x1, y1 = max(0, px - bw), max(0, py - bh)
-        x2, y2 = min(w, px + bw), min(h, py + bh)
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-        # Label background
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-        cv2.rectangle(out, (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
-        cv2.putText(out, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(out, (x1, max(0, y1 - th - 10)), (x1 + tw + 8, y1), color, -1)
+        cv2.putText(out, label, (x1 + 4, max(th + 4, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
         return out
 
-    def _save_frame(self, frame, label=None, cx=None, cy=None):
+    def _save_frame(self, frame, label=None, bbox=None):
+        """Save frame with optional bbox annotation. bbox = (x1, y1, x2, y2) pixels."""
         fn = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-        if label and cx is not None and cy is not None:
-            frame = self._draw_bbox(frame, label, cx, cy)
+        if label and bbox:
+            frame = self._draw_bbox_pixels(frame, label, *bbox)
         cv2.imwrite(str(IMAGES_DIR / fn), frame)
         return fn
 
@@ -442,7 +447,7 @@ class DetectionService:
 
     def _auto_log_detections(self, frame, detections, yolo_names):
         """Save every YOLO-detected object automatically (cooldown per class+zone).
-        Also auto-registers new item classes with a CLIP embedding from the crop."""
+        Uses CLIP zero-shot to refine names. Auto-registers new items."""
         if not AUTO_DETECT_ENABLED or len(detections) == 0:
             return
         now = time.time()
@@ -450,14 +455,31 @@ class DetectionService:
 
         for i, bbox in enumerate(detections.xyxy):
             cid = int(detections.class_id[i]) if detections.class_id is not None else -1
-            class_name = yolo_names.get(cid, f"object_{cid}")
+            yolo_name = yolo_names.get(cid, f"object_{cid}")
             conf = float(detections.confidence[i]) if detections.confidence is not None else 0.0
             if conf < AUTO_DETECT_MIN_CONFIDENCE:
                 continue
 
             x1, y1, x2, y2 = map(int, bbox)
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
             cx, cy = ((x1 + x2) / 2) / w, ((y1 + y2) / 2) / h
             zone = compute_zone(cx, cy)
+
+            # CLIP zero-shot: refine the name using a bigger vocabulary
+            crop_bgr = frame[y1:y2, x1:x2]
+            if crop_bgr.size > 0:
+                crop_pil = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
+                try:
+                    clip_name, clip_score = clip_service.classify_crop(crop_pil, CLIP_VOCAB)
+                    # Use CLIP name if confident, otherwise fall back to YOLO
+                    class_name = clip_name if clip_score > 0.15 else yolo_name
+                except Exception:
+                    class_name = yolo_name
+                    crop_pil = None
+            else:
+                class_name = yolo_name
+                crop_pil = None
 
             # Cooldown: skip if we logged this class in this zone recently
             key = (class_name, zone)
@@ -466,16 +488,15 @@ class DetectionService:
             self._auto_cooldowns[key] = now
 
             nearby = self._get_nearby(i, detections, yolo_names)
-            path = self._save_frame(frame, label=f"{class_name} {conf:.0%}", cx=cx, cy=cy)
+            # Save with REAL bounding box
+            path = self._save_frame(frame, label=f"{class_name} {conf:.0%}", bbox=(x1, y1, x2, y2))
 
-            # Auto-register as a tracked item if not already registered
-            crop_bgr = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
-            if crop_bgr.size > 0:
-                crop_pil = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
+            # Auto-register item with image saved to REGISTERED_DIR
+            if crop_pil:
                 emb = clip_service.get_image_embedding(crop_pil)
                 if self._loop:
                     asyncio.run_coroutine_threadsafe(
-                        self._auto_register_item(class_name, path, emb), self._loop
+                        self._auto_register_item(class_name, crop_bgr, emb), self._loop
                     )
 
             if self._loop:
@@ -483,7 +504,7 @@ class DetectionService:
                     self._save_sighting(None, class_name, path, conf, zone, cx, cy, nearby, "auto"),
                     self._loop,
                 )
-            logger.info(f"[auto] Logged '{class_name}' in {zone} (conf={conf:.2f}, nearby={nearby})")
+            logger.info(f"[auto] '{class_name}' in {zone} (yolo={yolo_name}, conf={conf:.2f})")
 
         # Prune expired cooldowns
         expired = [k for k, t in self._auto_cooldowns.items() if now - t > AUTO_DETECT_COOLDOWN * 2]
@@ -491,18 +512,23 @@ class DetectionService:
             del self._auto_cooldowns[k]
 
     @staticmethod
-    async def _auto_register_item(class_name, image_path, embedding):
-        """Auto-register a YOLO-detected class as a tracked item (idempotent)."""
+    async def _auto_register_item(class_name, crop_bgr, embedding):
+        """Auto-register a detected class as a tracked item.
+        Saves the crop image to REGISTERED_DIR so the Items tab can display it."""
         db = await get_db()
         try:
             cursor = await db.execute("SELECT id FROM registered_items WHERE name=?", (class_name,))
-            existing = await cursor.fetchone()
-            if existing:
+            if await cursor.fetchone():
                 return  # Already registered
+
+            # Save crop to registered directory (not images dir)
+            fn = f"auto_{class_name.replace(' ', '_')}_{uuid.uuid4().hex[:6]}.jpg"
+            cv2.imwrite(str(REGISTERED_DIR / fn), crop_bgr)
+
             emb_json = serialize_embedding(embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
             await db.execute(
                 "INSERT INTO registered_items (name, image_path, embedding) VALUES (?, ?, ?)",
-                (class_name, image_path, emb_json),
+                (class_name, fn, emb_json),
             )
             cursor = await db.execute("SELECT id FROM registered_items WHERE name=?", (class_name,))
             row = await cursor.fetchone()
@@ -512,7 +538,7 @@ class DetectionService:
                     (row["id"], emb_json, "auto"),
                 )
             await db.commit()
-            logger.info(f"[auto-register] Created item '{class_name}' with CLIP embedding")
+            logger.info(f"[auto-register] Created '{class_name}' -> {fn}")
         except Exception:
             logger.exception(f"Failed to auto-register '{class_name}'")
         finally:

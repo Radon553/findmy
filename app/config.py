@@ -16,8 +16,8 @@ CAMERA_INDEX = 0
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 
-# Detection
-YOLO_MODEL = "yolov8n.pt"
+# Detection — yolov8l for accurate bboxes (nano was misclassifying objects)
+YOLO_MODEL = "yolov8l.pt"
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 YOLO_CONFIDENCE = 0.4
 YOLO_IOU_THRESHOLD = 0.45

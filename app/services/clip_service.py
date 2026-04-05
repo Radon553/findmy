@@ -44,6 +44,18 @@ class CLIPService:
         embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
         return embeddings.cpu().tolist()
 
+    def classify_crop(self, image: Image.Image, candidates: list[str]) -> tuple[str, float]:
+        """Zero-shot classify a crop against candidate labels. Returns (best_label, score)."""
+        self.load()
+        prompts = [f"a photo of {c}" for c in candidates]
+        inputs = self._processor(text=prompts, images=image, return_tensors="pt", padding=True).to(self._device)
+        with torch.no_grad():
+            outputs = self._model(**inputs)
+        logits = outputs.logits_per_image.squeeze()
+        probs = logits.softmax(dim=-1)
+        best_idx = int(probs.argmax())
+        return candidates[best_idx], float(probs[best_idx])
+
     @staticmethod
     def cosine_similarity(a: list[float], b: list[float]) -> float:
         a_np = np.array(a, dtype=np.float32)
@@ -53,3 +65,42 @@ class CLIPService:
 
 # Singleton
 clip_service = CLIPService()
+
+# Extended vocabulary for CLIP zero-shot classification — common household objects
+CLIP_VOCAB = [
+    "airpods", "airpods case", "earbuds", "headphones",
+    "phone", "iphone", "smartphone", "cell phone",
+    "laptop", "macbook", "computer", "tablet", "ipad",
+    "keyboard", "mouse", "monitor", "screen",
+    "charger", "cable", "usb cable", "power bank",
+    "wallet", "purse", "handbag", "backpack", "bag", "tote bag",
+    "keys", "keychain", "key ring",
+    "glasses", "sunglasses", "reading glasses",
+    "watch", "apple watch", "smartwatch",
+    "water bottle", "cup", "mug", "coffee cup", "tumbler", "glass",
+    "book", "notebook", "journal", "planner",
+    "pen", "pencil", "marker", "highlighter",
+    "remote control", "tv remote",
+    "hat", "cap", "beanie",
+    "jacket", "coat", "hoodie", "sweater",
+    "shoe", "sneaker", "sandal", "boot",
+    "umbrella", "scarf", "gloves",
+    "medicine bottle", "pill bottle",
+    "camera", "go pro",
+    "speaker", "bluetooth speaker",
+    "toy", "stuffed animal", "figurine",
+    "plant", "potted plant", "flower vase", "vase",
+    "plate", "bowl", "fork", "knife", "spoon",
+    "scissors", "tape", "stapler",
+    "tissue box", "hand sanitizer",
+    "flashlight", "lighter",
+    "ring", "necklace", "bracelet", "jewelry",
+    "card", "credit card", "id card",
+    "person", "dog", "cat",
+    "chair", "stool", "couch", "sofa",
+    "pillow", "blanket", "towel",
+    "clock", "alarm clock",
+    "lamp", "desk lamp",
+    "box", "container", "basket",
+    "tie", "belt", "scarf",
+]

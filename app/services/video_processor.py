@@ -14,11 +14,11 @@ from ultralytics import YOLO
 
 from app.config import (
     YOLO_MODEL, YOLO_CONFIDENCE, YOLO_IOU_THRESHOLD,
-    SIMILARITY_THRESHOLD, IMAGES_DIR, VIDEO_SAMPLE_INTERVAL, ZONE_NAMES,
+    SIMILARITY_THRESHOLD, IMAGES_DIR, REGISTERED_DIR, VIDEO_SAMPLE_INTERVAL, ZONE_NAMES,
     AUTO_DETECT_ENABLED, AUTO_DETECT_COOLDOWN, AUTO_DETECT_MIN_CONFIDENCE,
 )
 from app.database import get_db, deserialize_embedding, serialize_embedding
-from app.services.clip_service import clip_service
+from app.services.clip_service import clip_service, CLIP_VOCAB
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +29,13 @@ def _compute_zone(cx: float, cy: float) -> str:
     return ZONE_NAMES[row * 3 + col]
 
 
-def _draw_bbox(frame, label, cx_norm, cy_norm, w, h, bbox_frac=0.15, color=(99, 102, 241)):
-    """Draw a bounding box + label on a frame copy."""
+def _draw_bbox(frame, label, x1, y1, x2, y2, color=(99, 102, 241)):
+    """Draw a bounding box using actual pixel coords on a frame copy."""
     out = frame.copy()
-    bw, bh = int(bbox_frac * w / 2), int(bbox_frac * h / 2)
-    px, py = int(cx_norm * w), int(cy_norm * h)
-    x1, y1 = max(0, px - bw), max(0, py - bh)
-    x2, y2 = min(w, px + bw), min(h, py + bh)
     cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-    cv2.rectangle(out, (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
-    cv2.putText(out, label, (x1 + 3, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    cv2.rectangle(out, (x1, max(0, y1 - th - 10)), (x1 + tw + 8, y1), color, -1)
+    cv2.putText(out, label, (x1 + 4, max(th + 4, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
     return out
 
 
@@ -134,12 +130,21 @@ class VideoProcessor:
             x2, y2 = min(w, x2), min(h, y2)
             if x2 - x1 < 20 or y2 - y1 < 20:
                 continue
-            crop = frame[y1:y2, x1:x2]
-            crops.append(Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)))
+            crop_bgr = frame[y1:y2, x1:x2]
+            crop_pil = Image.fromarray(cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB))
+            crops.append(crop_pil)
             cx, cy = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
             cls_id = int(box.cls[0])
             conf = float(box.conf[0])
-            class_name = yolo_names.get(cls_id, f"object_{cls_id}")
+            yolo_name = yolo_names.get(cls_id, f"object_{cls_id}")
+
+            # CLIP zero-shot for better name
+            try:
+                clip_name, clip_score = clip_service.classify_crop(crop_pil, CLIP_VOCAB)
+                class_name = clip_name if clip_score > 0.15 else yolo_name
+            except Exception:
+                class_name = yolo_name
+
             # Find nearby objects
             nearby = []
             tcx, tcy = (x1 + x2) / 2, (y1 + y2) / 2
@@ -154,12 +159,13 @@ class VideoProcessor:
                     if name not in nearby:
                         nearby.append(name)
             crop_meta.append({"cx": cx, "cy": cy, "nearby": nearby[:5],
-                              "class_name": class_name, "conf": conf})
+                              "class_name": class_name, "conf": conf,
+                              "bbox": (x1, y1, x2, y2), "crop_bgr": crop_bgr})
 
         if not crops:
             return
 
-        # Auto-log all YOLO detections with bounding boxes
+        # Auto-log all YOLO detections with real bounding boxes
         if AUTO_DETECT_ENABLED:
             for ci, meta in enumerate(crop_meta):
                 if meta["conf"] < AUTO_DETECT_MIN_CONFIDENCE:
@@ -170,18 +176,19 @@ class VideoProcessor:
                 if frame_idx - auto_cooldowns.get(key, -cooldown_frames - 1) < cooldown_frames:
                     continue
                 auto_cooldowns[key] = frame_idx
-                # Draw bbox on frame copy and save
+
+                bx1, by1, bx2, by2 = meta["bbox"]
                 label = f"{meta['class_name']} {meta['conf']:.0%}"
-                annotated = _draw_bbox(frame, label, meta["cx"], meta["cy"], w, h)
+                annotated = _draw_bbox(frame, label, bx1, by1, bx2, by2)
                 fn = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
                 cv2.imwrite(str(IMAGES_DIR / fn), annotated)
 
-                # Auto-register item
+                # Auto-register with crop saved to REGISTERED_DIR
                 crop_pil = crops[ci] if ci < len(crops) else None
                 if crop_pil:
                     emb = clip_service.get_image_embedding(crop_pil)
                     asyncio.run_coroutine_threadsafe(
-                        self._auto_register_item(meta["class_name"], fn, emb), self._loop
+                        self._auto_register_item(meta["class_name"], meta["crop_bgr"], emb), self._loop
                     )
 
                 asyncio.run_coroutine_threadsafe(
@@ -200,8 +207,9 @@ class VideoProcessor:
                 for item in registered:
                     sim = max(clip_service.cosine_similarity(emb, ie) for ie in item["embeddings"])
                     if sim >= SIMILARITY_THRESHOLD:
+                        bx1, by1, bx2, by2 = meta["bbox"]
                         label = f"{item['name']} {sim:.0%}"
-                        annotated = _draw_bbox(frame, label, meta["cx"], meta["cy"], w, h)
+                        annotated = _draw_bbox(frame, label, bx1, by1, bx2, by2)
                         fn = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
                         cv2.imwrite(str(IMAGES_DIR / fn), annotated)
                         zone = _compute_zone(meta["cx"], meta["cy"])
@@ -250,17 +258,19 @@ class VideoProcessor:
             await db.close()
 
     @staticmethod
-    async def _auto_register_item(class_name, image_path, embedding):
-        """Auto-register a detected class as a tracked item (idempotent)."""
+    async def _auto_register_item(class_name, crop_bgr, embedding):
+        """Auto-register a detected class. Saves crop to REGISTERED_DIR for Items tab."""
         db = await get_db()
         try:
             cursor = await db.execute("SELECT id FROM registered_items WHERE name=?", (class_name,))
             if await cursor.fetchone():
                 return
+            fn = f"auto_{class_name.replace(' ', '_')}_{uuid.uuid4().hex[:6]}.jpg"
+            cv2.imwrite(str(REGISTERED_DIR / fn), crop_bgr)
             emb_json = serialize_embedding(embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
             await db.execute(
                 "INSERT INTO registered_items (name, image_path, embedding) VALUES (?, ?, ?)",
-                (class_name, image_path, emb_json),
+                (class_name, fn, emb_json),
             )
             cursor = await db.execute("SELECT id FROM registered_items WHERE name=?", (class_name,))
             row = await cursor.fetchone()
@@ -270,7 +280,7 @@ class VideoProcessor:
                     (row["id"], emb_json, "auto"),
                 )
             await db.commit()
-            logger.info(f"[auto-register] Created item '{class_name}'")
+            logger.info(f"[auto-register] Created '{class_name}' -> {fn}")
         except Exception:
             logger.exception(f"Failed to auto-register '{class_name}'")
         finally:
