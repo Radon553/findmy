@@ -37,6 +37,9 @@ from app.config import (
     GRID_CROP_SIMILARITY_THRESHOLD,
     MATCH_LOG_PATH,
     ZONE_NAMES,
+    AUTO_DETECT_ENABLED,
+    AUTO_DETECT_COOLDOWN,
+    AUTO_DETECT_MIN_CONFIDENCE,
 )
 from app.database import get_db, deserialize_embedding
 from app.services.camera import camera_service
@@ -85,6 +88,8 @@ class DetectionService:
         self._last_zones: dict[str, str] = {}
         self._match_log_file = None
         self._match_log_writer = None
+        # Auto-detect: cooldown per (class_name, zone) to avoid spamming
+        self._auto_cooldowns: dict[tuple[str, str], float] = {}
 
     def load(self):
         if self._yolo is None:
@@ -244,6 +249,8 @@ class DetectionService:
 
         if len(detections) > 0:
             detections = self._tracker.update_with_detections(detections)
+            # Auto-log every YOLO detection (no registration needed)
+            self._auto_log_detections(frame, detections, yolo_names)
             for i, bbox in enumerate(detections.xyxy):
                 x1, y1, x2, y2 = map(int, bbox)
                 x1, y1 = max(0, x1), max(0, y1)
@@ -267,7 +274,10 @@ class DetectionService:
             return
 
         registered = asyncio.run_coroutine_threadsafe(self._load_items(), self._loop).result(timeout=5.0)
+
+        # If no registered items, auto-detect still logged above — skip CLIP matching
         if not registered:
+            self._expire_pending()
             return
 
         embs = clip_service.get_image_embeddings_batch(crops)
@@ -409,6 +419,47 @@ class DetectionService:
             await db.commit()
         finally:
             await db.close()
+
+    # --- Auto-detect: log all YOLO detections without registration ---
+
+    def _auto_log_detections(self, frame, detections, yolo_names):
+        """Save every YOLO-detected object automatically (cooldown per class+zone)."""
+        if not AUTO_DETECT_ENABLED or len(detections) == 0:
+            return
+        now = time.time()
+        h, w = frame.shape[:2]
+
+        for i, bbox in enumerate(detections.xyxy):
+            cid = int(detections.class_id[i]) if detections.class_id is not None else -1
+            class_name = yolo_names.get(cid, f"object_{cid}")
+            conf = float(detections.confidence[i]) if detections.confidence is not None else 0.0
+            if conf < AUTO_DETECT_MIN_CONFIDENCE:
+                continue
+
+            x1, y1, x2, y2 = map(int, bbox)
+            cx, cy = ((x1 + x2) / 2) / w, ((y1 + y2) / 2) / h
+            zone = compute_zone(cx, cy)
+
+            # Cooldown: skip if we logged this class in this zone recently
+            key = (class_name, zone)
+            if now - self._auto_cooldowns.get(key, 0) < AUTO_DETECT_COOLDOWN:
+                continue
+            self._auto_cooldowns[key] = now
+
+            nearby = self._get_nearby(i, detections, yolo_names)
+            path = self._save_frame(frame)
+
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    self._save_sighting(None, class_name, path, conf, zone, cx, cy, nearby, "auto"),
+                    self._loop,
+                )
+            logger.info(f"[auto] Logged '{class_name}' in {zone} (conf={conf:.2f}, nearby={nearby})")
+
+        # Prune expired cooldowns
+        expired = [k for k, t in self._auto_cooldowns.items() if now - t > AUTO_DETECT_COOLDOWN * 2]
+        for k in expired:
+            del self._auto_cooldowns[k]
 
 
 detection_service = DetectionService()

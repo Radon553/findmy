@@ -47,6 +47,11 @@ GRID_CROP_STRIDE = 0.35
 GRID_CROP_MAX = 32
 GRID_CROP_SIMILARITY_THRESHOLD = 0.76
 
+# Auto-detection — log all YOLO objects, no registration needed
+AUTO_DETECT_ENABLED = True
+AUTO_DETECT_COOLDOWN = 15  # seconds before re-logging same class in same zone
+AUTO_DETECT_MIN_CONFIDENCE = 0.5  # YOLO confidence floor for auto-logging
+
 # Video processing
 VIDEO_SAMPLE_INTERVAL = 5
 

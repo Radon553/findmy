@@ -71,7 +71,7 @@ async function doSearch(e) {
     out.innerHTML = '<p class="no-results">Searching...</p>';
     const r = await fetch('/api/search/?q=' + encodeURIComponent(q));
     const data = await r.json();
-    if (!data.length) { out.innerHTML = '<p class="no-results">No sightings found. Make sure the item is registered.</p>'; return; }
+    if (!data.length) { out.innerHTML = '<p class="no-results">No sightings found yet. Point the camera at objects and start detection — items are logged automatically.</p>'; return; }
     out.innerHTML = data.map(s => `
         <div class="result-card">
             <img src="${s.image_url}" alt="${s.item_name}">
@@ -94,22 +94,25 @@ async function loadSightings() {
     const r = await fetch('/api/search/recent?limit=30');
     const data = await r.json();
     const el = document.getElementById('sightings');
-    if (!data.length) { el.innerHTML = '<div class="empty">No sightings yet &mdash; register items and start detection</div>'; return; }
-    el.innerHTML = data.map(s => `
-        <div class="sight-card">
+    if (!data.length) { el.innerHTML = '<div class="empty">No sightings yet &mdash; start camera + detection to begin auto-logging</div>'; return; }
+    el.innerHTML = data.map(s => {
+        const isAuto = s.source === 'auto';
+        const confLabel = isAuto ? `${(s.similarity * 100).toFixed(0)}% conf` : `${(s.similarity * 100).toFixed(1)}% match`;
+        return `
+        <div class="sight-card${isAuto ? ' sight-auto' : ''}">
             <img src="/data/images/${s.image_path}" alt="${s.item_name}" loading="lazy">
             <div class="sight-info">
-                <span class="name">${s.item_name}</span>
+                <span class="name">${s.item_name}${isAuto ? ' <span class="badge-auto">auto</span>' : ''}</span>
                 <span class="detail">${fmtTime(s.timestamp)}</span>
                 <div class="sight-tags">
                     <span class="tag tag-zone">${s.zone || 'center'}</span>
-                    <span class="tag tag-conf">${(s.similarity * 100).toFixed(1)}%</span>
+                    <span class="tag tag-conf">${confLabel}</span>
                     <span class="tag tag-source">${s.source || 'camera'}</span>
                     ${(s.nearby_objects || []).map(n => `<span class="tag tag-nearby">near ${n}</span>`).join('')}
                 </div>
             </div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 /* === Video upload === */

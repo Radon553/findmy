@@ -17,7 +17,7 @@ class ItemResponse(BaseModel):
 
 class SightingResponse(BaseModel):
     id: int
-    item_id: int
+    item_id: Optional[int]
     item_name: str
     image_path: str
     similarity: float

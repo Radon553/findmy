@@ -10,6 +10,22 @@ from app.models import SearchResult, SightingResponse, EventResponse
 router = APIRouter(prefix="/api/search", tags=["search"])
 
 
+def _row_to_sighting(row) -> SightingResponse:
+    return SightingResponse(
+        id=row["id"],
+        item_id=row["item_id"],  # None for auto-detected
+        item_name=row["item_name"],
+        image_path=row["image_path"],
+        similarity=row["similarity"],
+        zone=row["zone"] or "center",
+        bbox_x=row["bbox_x"] or 0.5,
+        bbox_y=row["bbox_y"] or 0.5,
+        nearby_objects=json.loads(row["nearby_objects"]) if row["nearby_objects"] else [],
+        source=row["source"] or "camera",
+        timestamp=row["timestamp"],
+    )
+
+
 def extract_item_name(query: str) -> str:
     query = query.strip().lower().rstrip("?!.")
     patterns = [
@@ -34,14 +50,13 @@ async def search(q: str):
 
     db = await get_db()
     try:
-        # Latest sighting
+        # Latest sighting (searches both registered and auto-detected items)
         cursor = await db.execute(
-            """SELECT s.item_name, s.image_path, s.similarity, s.timestamp,
-                      s.zone, s.nearby_objects
-               FROM sightings s
-               JOIN registered_items r ON s.item_id = r.id
-               WHERE s.item_name LIKE ?
-               ORDER BY s.timestamp DESC LIMIT 1""",
+            """SELECT item_name, image_path, similarity, timestamp,
+                      zone, nearby_objects
+               FROM sightings
+               WHERE item_name LIKE ?
+               ORDER BY timestamp DESC LIMIT 1""",
             (f"%{item_name}%",),
         )
         row = await cursor.fetchone()
@@ -89,18 +104,7 @@ async def recent_sightings(limit: int = 30):
     finally:
         await db.close()
 
-    return [
-        SightingResponse(
-            id=row["id"], item_id=row["item_id"], item_name=row["item_name"],
-            image_path=row["image_path"], similarity=row["similarity"],
-            zone=row["zone"] or "center",
-            bbox_x=row["bbox_x"] or 0.5, bbox_y=row["bbox_y"] or 0.5,
-            nearby_objects=json.loads(row["nearby_objects"]) if row["nearby_objects"] else [],
-            source=row["source"] or "camera",
-            timestamp=row["timestamp"],
-        )
-        for row in rows
-    ]
+    return [_row_to_sighting(row) for row in rows]
 
 
 @router.get("/history/{item_name}", response_model=list[SightingResponse])
@@ -115,18 +119,7 @@ async def item_history(item_name: str, limit: int = 20):
     finally:
         await db.close()
 
-    return [
-        SightingResponse(
-            id=row["id"], item_id=row["item_id"], item_name=row["item_name"],
-            image_path=row["image_path"], similarity=row["similarity"],
-            zone=row["zone"] or "center",
-            bbox_x=row["bbox_x"] or 0.5, bbox_y=row["bbox_y"] or 0.5,
-            nearby_objects=json.loads(row["nearby_objects"]) if row["nearby_objects"] else [],
-            source=row["source"] or "camera",
-            timestamp=row["timestamp"],
-        )
-        for row in rows
-    ]
+    return [_row_to_sighting(row) for row in rows]
 
 
 @router.get("/events/{item_name}", response_model=list[EventResponse])

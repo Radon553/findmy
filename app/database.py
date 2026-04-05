@@ -31,7 +31,7 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS sightings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_id INTEGER NOT NULL,
+                item_id INTEGER,
                 item_name TEXT NOT NULL,
                 image_path TEXT NOT NULL,
                 similarity REAL NOT NULL,
@@ -86,6 +86,12 @@ async def init_db():
         await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_events_item
             ON events(item_id, timestamp DESC)
+        """)
+
+        # Add index on item_name for auto-detected sightings (no item_id)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sightings_name_ts
+            ON sightings(item_name COLLATE NOCASE, timestamp DESC)
         """)
 
         # Migrate legacy embeddings if needed

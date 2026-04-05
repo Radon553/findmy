@@ -15,6 +15,7 @@ from ultralytics import YOLO
 from app.config import (
     YOLO_MODEL, YOLO_CONFIDENCE, YOLO_IOU_THRESHOLD,
     SIMILARITY_THRESHOLD, IMAGES_DIR, VIDEO_SAMPLE_INTERVAL, ZONE_NAMES,
+    AUTO_DETECT_ENABLED, AUTO_DETECT_COOLDOWN, AUTO_DETECT_MIN_CONFIDENCE,
 )
 from app.database import get_db, deserialize_embedding
 from app.services.clip_service import clip_service
@@ -79,11 +80,7 @@ class VideoProcessor:
                 self._load_registered_items(), self._loop
             ).result(timeout=10.0)
 
-            if not registered:
-                job.status = "error"
-                job.error = "No items registered. Register items before uploading video."
-                cap.release()
-                return
+            auto_cooldowns: dict[tuple[str, str], int] = {}  # (class, zone) -> last frame
 
             frame_idx = 0
             while True:
@@ -94,7 +91,7 @@ class VideoProcessor:
                 job.processed_frames = frame_idx
                 if frame_idx % VIDEO_SAMPLE_INTERVAL != 0:
                     continue
-                self._process_frame(frame, registered, job)
+                self._process_frame(frame, registered, job, auto_cooldowns, frame_idx)
 
             cap.release()
             job.status = "completed"
@@ -104,7 +101,8 @@ class VideoProcessor:
             job.status = "error"
             job.error = str(e)
 
-    def _process_frame(self, frame: np.ndarray, registered: list[dict], job: VideoJob):
+    def _process_frame(self, frame: np.ndarray, registered: list[dict], job: VideoJob,
+                       auto_cooldowns: dict, frame_idx: int):
         h, w = frame.shape[:2]
         results = self._yolo(frame, verbose=False, conf=YOLO_CONFIDENCE, iou=YOLO_IOU_THRESHOLD)[0]
         if len(results.boxes) == 0:
@@ -121,6 +119,9 @@ class VideoProcessor:
             crop = frame[y1:y2, x1:x2]
             crops.append(Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)))
             cx, cy = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            class_name = yolo_names.get(cls_id, f"object_{cls_id}")
             # Find nearby objects
             nearby = []
             tcx, tcy = (x1 + x2) / 2, (y1 + y2) / 2
@@ -130,32 +131,62 @@ class VideoProcessor:
                 ox1, oy1, ox2, oy2 = map(int, obox.xyxy[0])
                 ocx, ocy = (ox1 + ox2) / 2, (oy1 + oy2) / 2
                 if ((tcx - ocx)**2 + (tcy - ocy)**2)**0.5 < 300:
-                    cls_id = int(obox.cls[0])
-                    name = yolo_names.get(cls_id, f"object_{cls_id}")
+                    oid = int(obox.cls[0])
+                    name = yolo_names.get(oid, f"object_{oid}")
                     if name not in nearby:
                         nearby.append(name)
-            crop_meta.append({"cx": cx, "cy": cy, "nearby": nearby[:5]})
+            crop_meta.append({"cx": cx, "cy": cy, "nearby": nearby[:5],
+                              "class_name": class_name, "conf": conf})
 
         if not crops:
             return
 
-        embeddings = clip_service.get_image_embeddings_batch(crops)
-        for emb, meta in zip(embeddings, crop_meta):
-            for item in registered:
-                sim = max(clip_service.cosine_similarity(emb, ie) for ie in item["embeddings"])
-                if sim >= SIMILARITY_THRESHOLD:
-                    fn = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-                    cv2.imwrite(str(IMAGES_DIR / fn), frame)
-                    zone = _compute_zone(meta["cx"], meta["cy"])
-                    asyncio.run_coroutine_threadsafe(
-                        self._save_sighting(
-                            item["id"], item["name"], fn, sim,
-                            zone, meta["cx"], meta["cy"], meta["nearby"],
-                        ),
-                        self._loop,
-                    )
-                    job.sightings_found += 1
-                    break
+        # Auto-log all YOLO detections
+        if AUTO_DETECT_ENABLED:
+            frame_saved = False
+            saved_fn = None
+            for meta in crop_meta:
+                if meta["conf"] < AUTO_DETECT_MIN_CONFIDENCE:
+                    continue
+                zone = _compute_zone(meta["cx"], meta["cy"])
+                key = (meta["class_name"], zone)
+                # Cooldown: skip if same class+zone logged within last N sampled frames
+                cooldown_frames = int(AUTO_DETECT_COOLDOWN / max(VIDEO_SAMPLE_INTERVAL / 30, 0.1))
+                if frame_idx - auto_cooldowns.get(key, -cooldown_frames - 1) < cooldown_frames:
+                    continue
+                auto_cooldowns[key] = frame_idx
+                if not frame_saved:
+                    saved_fn = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+                    cv2.imwrite(str(IMAGES_DIR / saved_fn), frame)
+                    frame_saved = True
+                asyncio.run_coroutine_threadsafe(
+                    self._save_sighting(
+                        None, meta["class_name"], saved_fn, meta["conf"],
+                        zone, meta["cx"], meta["cy"], meta["nearby"],
+                    ),
+                    self._loop,
+                )
+                job.sightings_found += 1
+
+        # Also match against registered items (if any)
+        if registered:
+            embeddings = clip_service.get_image_embeddings_batch(crops)
+            for emb, meta in zip(embeddings, crop_meta):
+                for item in registered:
+                    sim = max(clip_service.cosine_similarity(emb, ie) for ie in item["embeddings"])
+                    if sim >= SIMILARITY_THRESHOLD:
+                        fn = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+                        cv2.imwrite(str(IMAGES_DIR / fn), frame)
+                        zone = _compute_zone(meta["cx"], meta["cy"])
+                        asyncio.run_coroutine_threadsafe(
+                            self._save_sighting(
+                                item["id"], item["name"], fn, sim,
+                                zone, meta["cx"], meta["cy"], meta["nearby"],
+                            ),
+                            self._loop,
+                        )
+                        job.sightings_found += 1
+                        break
 
     @staticmethod
     async def _load_registered_items():
