@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 from PIL import Image
-from transformers import CLIPModel, CLIPProcessor
+from transformers import AutoModel, AutoProcessor
 from app.config import CLIP_MODEL
 
 
@@ -11,15 +11,15 @@ class CLIPService:
     """Handles CLIP embedding generation for item registration and matching."""
 
     def __init__(self):
-        self._model: CLIPModel | None = None
-        self._processor: CLIPProcessor | None = None
+        self._model: AutoModel | None = None
+        self._processor: AutoProcessor | None = None
         self._device = "mps" if torch.backends.mps.is_available() else "cpu"
 
     def load(self):
         if self._model is not None:
             return
-        self._processor = CLIPProcessor.from_pretrained(CLIP_MODEL)
-        self._model = CLIPModel.from_pretrained(CLIP_MODEL).to(self._device)
+        self._processor = AutoProcessor.from_pretrained(CLIP_MODEL)
+        self._model = AutoModel.from_pretrained(CLIP_MODEL).to(self._device)
         self._model.eval()
 
     def get_image_embedding(self, image: Image.Image) -> list[float]:

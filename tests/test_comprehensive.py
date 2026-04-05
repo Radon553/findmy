@@ -291,7 +291,7 @@ async def test_6_lifecycle():
 
     # Verify embedding is valid
     emb = deserialize_embedding(row["embedding"])
-    report("Embedding is valid list", isinstance(emb, list) and len(emb) == 512,
+    report("Embedding is valid list", isinstance(emb, list) and len(emb) == 1152,
            f"length={len(emb)}")
 
     # Delete

@@ -19,9 +19,8 @@ router = APIRouter(prefix="/api/items", tags=["items"])
 def _generate_augmented_crops(image: Image.Image) -> list[Image.Image]:
     """Generate augmented versions of a registration image.
 
-    Returns ~13 variants: original, center crop, horizontal flip,
-    four corner quadrant crops, ±10°/±20° rotations, and brightness
-    adjustments. This produces a robust averaged CLIP embedding.
+    Returns 5 variants: original, center crop, horizontal flip,
+    and brightness adjustments. Kept small for SigLIP performance.
     """
     w, h = image.size
     crops: list[Image.Image] = [image]
@@ -33,17 +32,6 @@ def _generate_augmented_crops(image: Image.Image) -> list[Image.Image]:
 
     # Horizontal flip
     crops.append(ImageOps.mirror(image))
-
-    # Four corner quadrant crops (70% of image)
-    qw, qh = int(w * 0.7), int(h * 0.7)
-    crops.append(image.crop((0, 0, qw, qh)))             # top-left
-    crops.append(image.crop((w - qw, 0, w, qh)))         # top-right
-    crops.append(image.crop((0, h - qh, qw, h)))         # bottom-left
-    crops.append(image.crop((w - qw, h - qh, w, h)))     # bottom-right
-
-    # Slight rotations (expand=True to avoid clipping)
-    for angle in [-20, -10, 10, 20]:
-        crops.append(image.rotate(angle, expand=True, fillcolor=(128, 128, 128)))
 
     # Brightness adjustments
     enhancer = ImageEnhance.Brightness(image)

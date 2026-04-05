@@ -312,7 +312,12 @@ class DetectionService:
                         continue
 
                 # Phase A: update or create pending sighting
-                key = (tracker_id, item["name"])
+                # For grid crops (negative tracker_id), key by item name only
+                # so matches across different grid positions accumulate
+                if tracker_id < 0:
+                    key = (0, item["name"])
+                else:
+                    key = (tracker_id, item["name"])
                 if key in self._pending_sightings:
                     ps = self._pending_sightings[key]
                     ps.last_seen = now

@@ -16,7 +16,7 @@ FRAME_HEIGHT = 720
 
 # Detection
 YOLO_MODEL = "yolov8n.pt"
-CLIP_MODEL = "openai/clip-vit-base-patch32"
+CLIP_MODEL = "google/siglip-so400m-patch14-384"
 YOLO_CONFIDENCE = 0.4  # min confidence for YOLO detections
 YOLO_IOU_THRESHOLD = 0.45  # NMS IoU threshold to suppress duplicate boxes
 DETECTION_INTERVAL = 0.5  # seconds between detection cycles
@@ -29,9 +29,9 @@ BLUR_THRESHOLD = 100.0
 MIN_BBOX_AREA_RATIO = 0.005
 
 # Dynamic similarity thresholds (based on number of registered embeddings)
-SIMILARITY_THRESHOLD = 0.82  # baseline (2 photos)
-SIMILARITY_THRESHOLD_SINGLE = 0.85  # items with only 1 photo — stricter
-SIMILARITY_THRESHOLD_MULTI = 0.78  # items with 3+ photos — more reliable
+SIMILARITY_THRESHOLD = 0.70  # baseline (2 photos)
+SIMILARITY_THRESHOLD_SINGLE = 0.72  # items with only 1 photo — stricter
+SIMILARITY_THRESHOLD_MULTI = 0.68  # items with 3+ photos — more reliable
 
 # Visibility confirmation
 CONFIRMATION_SECONDS = 1.0  # object must be visible this long before saving
@@ -43,7 +43,7 @@ GRID_CROP_ENABLED = True
 GRID_CROP_SCALES = [(400, 300), (240, 180), (160, 120), (120, 120), (80, 80), (60, 60)]
 GRID_CROP_STRIDE = 0.35  # tighter overlap so boundary objects are fully captured
 GRID_CROP_MAX = 48  # enough crops for multi-scale coverage
-GRID_CROP_SIMILARITY_THRESHOLD = 0.83  # stricter for grid crops
+GRID_CROP_SIMILARITY_THRESHOLD = 0.70  # tunable starting point for SigLIP
 
 # Text-based registration
 TEXT_PROMPT_TEMPLATES = [
@@ -55,9 +55,9 @@ TEXT_PROMPT_TEMPLATES = [
     "{}",
 ]
 
-# Text-image similarity thresholds (CLIP text-image scores are much lower than image-image)
-TEXT_SIMILARITY_THRESHOLD = 0.24
-TEXT_SIMILARITY_THRESHOLD_GRID = 0.22
+# Text-image similarity thresholds (SigLIP text-image scores are in a similar range to image-image)
+TEXT_SIMILARITY_THRESHOLD = 0.70
+TEXT_SIMILARITY_THRESHOLD_GRID = 0.68
 
 # Confidence logging
 MATCH_LOG_PATH = DATA_DIR / "match_log.csv"
