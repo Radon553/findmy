@@ -76,9 +76,13 @@ class VideoProcessor:
                 return
 
             job.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            registered = asyncio.run_coroutine_threadsafe(
-                self._load_registered_items(), self._loop
-            ).result(timeout=10.0)
+            try:
+                registered = asyncio.run_coroutine_threadsafe(
+                    self._load_registered_items(), self._loop
+                ).result(timeout=10.0) or []
+            except Exception:
+                registered = []
+                logger.info("No registered items found — auto-detect only mode")
 
             auto_cooldowns: dict[tuple[str, str], int] = {}  # (class, zone) -> last frame
 
@@ -162,7 +166,7 @@ class VideoProcessor:
                 asyncio.run_coroutine_threadsafe(
                     self._save_sighting(
                         None, meta["class_name"], saved_fn, meta["conf"],
-                        zone, meta["cx"], meta["cy"], meta["nearby"],
+                        zone, meta["cx"], meta["cy"], meta["nearby"], "auto",
                     ),
                     self._loop,
                 )
@@ -211,12 +215,12 @@ class VideoProcessor:
             await db.close()
 
     @staticmethod
-    async def _save_sighting(item_id, item_name, image_path, similarity, zone, bbox_x, bbox_y, nearby):
+    async def _save_sighting(item_id, item_name, image_path, similarity, zone, bbox_x, bbox_y, nearby, source="video"):
         db = await get_db()
         try:
             await db.execute(
                 "INSERT INTO sightings (item_id, item_name, image_path, similarity, zone, bbox_x, bbox_y, nearby_objects, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (item_id, item_name, image_path, similarity, zone, bbox_x, bbox_y, json.dumps(nearby), "video"),
+                (item_id, item_name, image_path, similarity, zone, bbox_x, bbox_y, json.dumps(nearby), source),
             )
             await db.commit()
         finally:
