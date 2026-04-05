@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse, Response
 
 from app.services.camera import camera_service
@@ -6,11 +6,17 @@ from app.services.camera import camera_service
 router = APIRouter(prefix="/api/camera", tags=["camera"])
 
 
+@router.get("/list")
+async def list_cameras():
+    """Return available camera devices."""
+    return camera_service.enumerate_cameras()
+
+
 @router.post("/start")
-async def start_camera():
-    """Start the camera capture."""
+async def start_camera(camera_index: int | None = Query(None)):
+    """Start the camera capture, optionally selecting a specific camera."""
     try:
-        camera_service.start()
+        camera_service.start(camera_index=camera_index)
     except RuntimeError as e:
         raise HTTPException(503, str(e))
     return {"status": "started"}
