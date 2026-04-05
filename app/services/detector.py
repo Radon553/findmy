@@ -25,8 +25,11 @@ from app.config import (
     DETECTION_INTERVAL,
     COOLDOWN_SECONDS,
     IMAGES_DIR,
+    BLUR_THRESHOLD,
+    MIN_BBOX_AREA_RATIO,
     CONFIRMATION_SECONDS,
     CONFIRMATION_MAX_GAP,
+    MIN_MATCH_COUNT,
     GRID_CROP_ENABLED,
     GRID_CROP_SCALES,
     GRID_CROP_STRIDE,
@@ -61,6 +64,7 @@ class PendingSighting:
     last_seen: float
     best_similarity: float
     best_frame: np.ndarray
+    match_count: int = 1
 
 
 class DetectionService:
@@ -211,8 +215,16 @@ class DetectionService:
         if frame is None:
             return
 
+        # --- Blur detection: skip blurry frames entirely ---
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        if laplacian_var < BLUR_THRESHOLD:
+            self._expire_pending_sightings()
+            return
+
         self._frame_counter += 1
         h, w = frame.shape[:2]
+        frame_area = w * h
 
         # --- YOLO detection + tracking ---
         results = self._yolo(frame, verbose=False, conf=YOLO_CONFIDENCE, iou=YOLO_IOU_THRESHOLD)[0]
@@ -228,7 +240,9 @@ class DetectionService:
                 x1, y1, x2, y2 = map(int, bbox)
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w, x2), min(h, y2)
-                if x2 - x1 < 20 or y2 - y1 < 20:
+                # Skip tiny detections (< 5% of frame area)
+                box_area = (x2 - x1) * (y2 - y1)
+                if box_area < frame_area * MIN_BBOX_AREA_RATIO:
                     continue
                 crop_bgr = frame[y1:y2, x1:x2]
                 # Preprocessing: CLAHE + sharpen
@@ -298,6 +312,7 @@ class DetectionService:
                 if key in self._pending_sightings:
                     ps = self._pending_sightings[key]
                     ps.last_seen = now
+                    ps.match_count += 1
                     if best_sim > ps.best_similarity:
                         ps.best_similarity = best_sim
                         ps.best_frame = frame.copy()
@@ -328,7 +343,7 @@ class DetectionService:
             if now - ps.last_seen > CONFIRMATION_MAX_GAP:
                 to_remove.append(key)
                 continue
-            if now - ps.first_seen >= CONFIRMATION_SECONDS:
+            if now - ps.first_seen >= CONFIRMATION_SECONDS and ps.match_count >= MIN_MATCH_COUNT:
                 image_path = self._save_frame(ps.best_frame)
                 asyncio.run_coroutine_threadsafe(
                     self._save_sighting(
@@ -339,7 +354,7 @@ class DetectionService:
                 self._cooldowns.setdefault(tracker_id, {})[item_name] = now
                 logger.info(
                     f"Confirmed '{ps.item_name}' (similarity={ps.best_similarity:.3f}, "
-                    f"visible for {now - ps.first_seen:.1f}s)"
+                    f"visible for {now - ps.first_seen:.1f}s, matched {ps.match_count} frames)"
                 )
                 to_remove.append(key)
 
