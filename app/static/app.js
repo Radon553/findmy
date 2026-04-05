@@ -198,6 +198,21 @@ async function takeSnapshot() {
     btn.disabled = false;
 }
 
+// --- Registration mode toggle ---
+
+function toggleRegMode() {
+    const mode = document.querySelector('input[name="reg-mode"]:checked').value;
+    const photoRow = document.getElementById('photo-input-row');
+    const previewsDiv = document.getElementById('snap-previews');
+    if (mode === 'photo') {
+        photoRow.style.display = '';
+    } else {
+        photoRow.style.display = 'none';
+        previewsDiv.innerHTML = '';
+        _snapshotBlobs = [];
+    }
+}
+
 // --- Register ---
 
 async function registerItem(e) {
@@ -206,10 +221,35 @@ async function registerItem(e) {
     const photoInput = document.getElementById('item-photo');
     const previewsDiv = document.getElementById('snap-previews');
     const statusDiv = document.getElementById('register-status');
+    const mode = document.querySelector('input[name="reg-mode"]:checked').value;
 
     const name = nameInput.value.trim();
     if (!name) return;
 
+    if (mode === 'text') {
+        // Text-only registration
+        statusDiv.innerHTML = '<span style="color:#666">Registering... (generating text embeddings)</span>';
+        const res = await fetch('/api/items/register-text', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            statusDiv.innerHTML = `<span class="success">Registered "${data.name}" via text description!</span>`;
+            nameInput.value = '';
+            loadItems();
+        } else {
+            let errMsg = 'Registration failed';
+            if (data.detail) {
+                errMsg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+            }
+            statusDiv.innerHTML = `<span class="error">${errMsg}</span>`;
+        }
+        return;
+    }
+
+    // Photo registration
     const form = new FormData();
     form.append('name', name);
 
@@ -292,13 +332,20 @@ async function loadItems() {
         return;
     }
 
-    container.innerHTML = items.map(item => `
+    container.innerHTML = items.map(item => {
+        const imgTag = item.image_path && item.image_path !== 'text_only'
+            ? `<img src="/data/registered/${item.image_path}" alt="${item.name}">`
+            : `<div class="item-card-placeholder">Text</div>`;
+        const countLabel = item.photo_count > 0
+            ? `${item.photo_count} photo${item.photo_count !== 1 ? 's' : ''}`
+            : 'text only';
+        return `
         <div class="item-card">
-            <img src="/data/registered/${item.image_path}" alt="${item.name}">
+            ${imgTag}
             <div class="item-card-body">
                 <div class="item-card-info">
                     <span>${item.name}</span>
-                    <span class="photo-count">${item.photo_count} photo${item.photo_count !== 1 ? 's' : ''}</span>
+                    <span class="photo-count">${countLabel}</span>
                 </div>
                 <div class="item-card-actions">
                     <button class="btn btn-snap btn-small" onclick="addPhotoToItem(${item.id}, '${item.name}')">+ Photo</button>
@@ -306,7 +353,7 @@ async function loadItems() {
                 </div>
             </div>
         </div>
-    `).join('');
+    `}).join('');
 }
 
 async function deleteItem(id, name) {

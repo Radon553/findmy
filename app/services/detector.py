@@ -35,6 +35,8 @@ from app.config import (
     GRID_CROP_STRIDE,
     GRID_CROP_MAX,
     GRID_CROP_SIMILARITY_THRESHOLD,
+    TEXT_SIMILARITY_THRESHOLD,
+    TEXT_SIMILARITY_THRESHOLD_GRID,
     MATCH_LOG_PATH,
 )
 from app.database import get_db, deserialize_embedding
@@ -187,15 +189,17 @@ class DetectionService:
     # --- Dynamic threshold ---
 
     @staticmethod
-    def _get_threshold(embedding_count: int, is_grid: bool) -> float:
+    def _get_threshold(embedding_count: int, is_grid: bool, has_text_embeddings: bool = False) -> float:
         """Pick similarity threshold based on how many photos the item has."""
+        if has_text_embeddings:
+            return TEXT_SIMILARITY_THRESHOLD_GRID if is_grid else TEXT_SIMILARITY_THRESHOLD
         if is_grid:
             return GRID_CROP_SIMILARITY_THRESHOLD
         if embedding_count >= 3:
-            return SIMILARITY_THRESHOLD_MULTI  # 0.70
+            return SIMILARITY_THRESHOLD_MULTI
         if embedding_count == 1:
-            return SIMILARITY_THRESHOLD_SINGLE  # 0.80
-        return SIMILARITY_THRESHOLD  # 0.75
+            return SIMILARITY_THRESHOLD_SINGLE
+        return SIMILARITY_THRESHOLD
 
     # --- Detection loop ---
 
@@ -290,7 +294,7 @@ class DetectionService:
                     for item_emb in item["embeddings"]
                 )
 
-                threshold = self._get_threshold(item["embedding_count"], is_grid)
+                threshold = self._get_threshold(item["embedding_count"], is_grid, item.get("has_text_embeddings", False))
 
                 # Log every comparison
                 matched = best_sim >= threshold
@@ -436,13 +440,14 @@ class DetectionService:
             result = []
             for item in items:
                 cursor = await db.execute(
-                    "SELECT embedding FROM item_embeddings WHERE item_id = ?",
+                    "SELECT embedding, embedding_type FROM item_embeddings WHERE item_id = ?",
                     (item["id"],),
                 )
                 emb_rows = await cursor.fetchall()
                 embeddings = [
                     deserialize_embedding(r["embedding"]) for r in emb_rows
                 ]
+                has_text = any(r["embedding_type"] == "text" for r in emb_rows)
                 # Fallback: if item_embeddings is empty, use the legacy column
                 if not embeddings:
                     cursor = await db.execute(
@@ -459,6 +464,7 @@ class DetectionService:
                         "name": item["name"],
                         "embeddings": embeddings,
                         "embedding_count": len(embeddings),
+                        "has_text_embeddings": has_text,
                     })
             return result
         finally:

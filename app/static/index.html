@@ -45,8 +45,12 @@
         <section class="register-section">
             <h2>Register an Item</h2>
             <form id="register-form" onsubmit="registerItem(event)">
-                <input type="text" id="item-name" placeholder="Item name (e.g. keys)" required>
-                <div class="photo-input-row">
+                <input type="text" id="item-name" placeholder="Item name (e.g. keys, airpods)" required>
+                <div class="register-mode-toggle">
+                    <label><input type="radio" name="reg-mode" value="text" checked onchange="toggleRegMode()"> By Name Only</label>
+                    <label><input type="radio" name="reg-mode" value="photo" onchange="toggleRegMode()"> With Photos</label>
+                </div>
+                <div id="photo-input-row" class="photo-input-row" style="display:none">
                     <input type="file" id="item-photo" accept="image/*" multiple>
                     <span class="photo-or">or</span>
                     <button type="button" id="btn-snap" class="btn btn-snap" onclick="takeSnapshot()" disabled>Take Photo</button>
@@ -64,6 +68,6 @@
         </section>
     </main>
 
-    <script src="/app.js"></script>
+    <script src="/app.js?v=2"></script>
 </body>
 </html>

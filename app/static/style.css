@@ -404,6 +404,33 @@ input[type="file"] {
     border-radius: 8px;
 }
 
+.item-card-placeholder {
+    width: 60px;
+    height: 60px;
+    border-radius: 8px;
+    background: #1a1a2e;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #666;
+    font-size: 0.7rem;
+    flex-shrink: 0;
+}
+
+.register-mode-toggle {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.85rem;
+    color: #aaa;
+}
+
+.register-mode-toggle label {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
 .item-card-actions {
     display: flex;
     gap: 0.4rem;

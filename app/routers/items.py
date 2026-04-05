@@ -7,7 +7,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from PIL import Image, ImageEnhance, ImageOps
 import io
 
-from app.config import REGISTERED_DIR
+from app.config import REGISTERED_DIR, TEXT_PROMPT_TEMPLATES
 from app.database import get_db, serialize_embedding
 from app.models import ItemResponse
 from app.services.clip_service import clip_service
@@ -134,6 +134,58 @@ async def register_item(
         image_path=row["image_path"],
         created_at=row["created_at"],
         photo_count=len(photos),
+    )
+
+
+@router.post("/register-text", response_model=ItemResponse)
+async def register_item_text(body: dict):
+    """Register a new item using only its name — CLIP generates text embeddings."""
+    name = body.get("name", "").strip().lower()
+    if not name:
+        raise HTTPException(400, "Item name is required")
+
+    # Generate descriptive prompts and embed them
+    prompts = [t.format(name) for t in TEXT_PROMPT_TEMPLATES]
+    logger.info(f"Registering '{name}' via text with {len(prompts)} prompts")
+    embeddings = clip_service.get_text_embeddings(prompts)
+
+    first_embedding = embeddings[0]
+
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO registered_items (name, image_path, embedding)
+               VALUES (?, ?, ?)""",
+            (name, "text_only", serialize_embedding(first_embedding)),
+        )
+        await db.commit()
+
+        cursor = await db.execute(
+            "SELECT * FROM registered_items WHERE name = ?", (name,)
+        )
+        row = await cursor.fetchone()
+        item_id = row["id"]
+
+        for i, emb in enumerate(embeddings):
+            await db.execute(
+                "INSERT INTO item_embeddings (item_id, embedding, source, embedding_type) VALUES (?, ?, ?, ?)",
+                (item_id, serialize_embedding(emb), f"text_prompt_{i + 1}", "text"),
+            )
+        await db.commit()
+        logger.info(f"Registered '{name}' with {len(embeddings)} text embeddings")
+    except Exception as e:
+        if "UNIQUE" in str(e):
+            raise HTTPException(409, f"Item '{name}' is already registered")
+        raise
+    finally:
+        await db.close()
+
+    return ItemResponse(
+        id=row["id"],
+        name=row["name"],
+        image_path=None,
+        created_at=row["created_at"],
+        photo_count=0,
     )
 
 

@@ -44,6 +44,19 @@ class CLIPService:
         embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
         return embeddings.cpu().tolist()
 
+    def get_text_embeddings(self, prompts: list[str]) -> list[list[float]]:
+        """Generate normalized CLIP embeddings for a list of text prompts."""
+        if not prompts:
+            return []
+        self.load()
+        inputs = self._processor(text=prompts, return_tensors="pt", padding=True).to(
+            self._device
+        )
+        with torch.no_grad():
+            embeddings = self._model.get_text_features(**inputs)
+        embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
+        return embeddings.cpu().tolist()
+
     @staticmethod
     def cosine_similarity(a: list[float], b: list[float]) -> float:
         a_np = np.array(a, dtype=np.float32)

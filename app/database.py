@@ -62,6 +62,14 @@ async def init_db():
             ON item_embeddings(item_id)
         """)
 
+        # --- Add embedding_type column if missing ---
+        try:
+            await db.execute(
+                "ALTER TABLE item_embeddings ADD COLUMN embedding_type TEXT DEFAULT 'image'"
+            )
+        except Exception:
+            pass  # column already exists
+
         # --- Migrate existing embeddings if item_embeddings is empty ---
         cursor = await db.execute("SELECT COUNT(*) as cnt FROM item_embeddings")
         row = await cursor.fetchone()

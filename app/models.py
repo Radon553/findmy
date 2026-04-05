@@ -8,9 +8,9 @@ class ItemRegister(BaseModel):
 class ItemResponse(BaseModel):
     id: int
     name: str
-    image_path: str
+    image_path: str | None = None
     created_at: str
-    photo_count: int = 1
+    photo_count: int = 0
 
 
 class SightingResponse(BaseModel):

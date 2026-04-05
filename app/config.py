@@ -25,8 +25,8 @@ COOLDOWN_SECONDS = 30  # min seconds between saving same item
 # Blur detection — skip frames below this Laplacian variance
 BLUR_THRESHOLD = 100.0
 
-# Minimum bounding box area as fraction of frame area (5%)
-MIN_BBOX_AREA_RATIO = 0.05
+# Minimum bounding box area as fraction of frame area (0.5% ≈ 68x68px on 720p)
+MIN_BBOX_AREA_RATIO = 0.005
 
 # Dynamic similarity thresholds (based on number of registered embeddings)
 SIMILARITY_THRESHOLD = 0.82  # baseline (2 photos)
@@ -40,10 +40,24 @@ MIN_MATCH_COUNT = 2  # must be matched in at least this many detection cycles
 
 # Grid crop fallback for custom items
 GRID_CROP_ENABLED = True
-GRID_CROP_SCALES = [(400, 300), (240, 180), (160, 120), (120, 120)]
+GRID_CROP_SCALES = [(400, 300), (240, 180), (160, 120), (120, 120), (80, 80), (60, 60)]
 GRID_CROP_STRIDE = 0.35  # tighter overlap so boundary objects are fully captured
-GRID_CROP_MAX = 32  # enough crops for multi-scale coverage
+GRID_CROP_MAX = 48  # enough crops for multi-scale coverage
 GRID_CROP_SIMILARITY_THRESHOLD = 0.83  # stricter for grid crops
+
+# Text-based registration
+TEXT_PROMPT_TEMPLATES = [
+    "a photo of {}",
+    "a photo of {} on a table",
+    "a photo of {} on a desk",
+    "{} in a room",
+    "a close-up photo of {}",
+    "{}",
+]
+
+# Text-image similarity thresholds (CLIP text-image scores are much lower than image-image)
+TEXT_SIMILARITY_THRESHOLD = 0.24
+TEXT_SIMILARITY_THRESHOLD_GRID = 0.22
 
 # Confidence logging
 MATCH_LOG_PATH = DATA_DIR / "match_log.csv"
